@@ -169,6 +169,72 @@
   }
   .add-fav-btn:hover{border-color:var(--ink);color:var(--ink);}
 
+  /* ---- Food search ---- */
+  .search-wrap{position:relative;margin-bottom:10px;}
+  #foodSearch{
+    width:100%;
+    font-family:'IBM Plex Sans',sans-serif;
+    background:var(--paper-2);
+    border:1px solid var(--rule);
+    border-radius:2px;
+    padding:10px 12px;
+    font-size:13px;
+    color:var(--ink);
+  }
+  #foodSearch:focus{outline:2px solid var(--ink);outline-offset:1px;border-color:var(--ink);}
+  .search-results{
+    display:none;
+    position:absolute;
+    z-index:20;
+    top:calc(100% + 4px);
+    left:0;right:0;
+    background:var(--paper-2);
+    border:1px solid var(--ink);
+    border-radius:2px;
+    max-height:300px;
+    overflow-y:auto;
+    box-shadow:0 4px 10px rgba(0,0,0,.12);
+  }
+  .search-results .item{
+    padding:9px 12px;
+    border-bottom:1px solid var(--rule);
+    cursor:pointer;
+    font-size:13px;
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    gap:12px;
+  }
+  .search-results .item:last-child{border-bottom:none;}
+  .search-results .item:hover{background:var(--ink);color:var(--paper);}
+  .search-results .item:hover .brand{color:var(--paper-2);}
+  .search-results .item .brand{
+    display:block;
+    font-size:11px;
+    color:var(--muted);
+    margin-top:2px;
+  }
+  .search-results .item .kcal{
+    font-family:'IBM Plex Mono',monospace;
+    font-weight:600;
+    white-space:nowrap;
+    flex-shrink:0;
+  }
+  .search-results .status{
+    padding:12px;
+    font-size:12px;
+    color:var(--muted);
+    font-style:italic;
+  }
+  .search-results .attribution{
+    padding:6px 12px;
+    font-size:10px;
+    color:var(--muted);
+    border-top:1px solid var(--rule);
+    text-transform:uppercase;
+    letter-spacing:.05em;
+  }
+
   /* ---- Manual add ---- */
   .manual-form{display:flex;gap:8px;flex-wrap:wrap;}
   .manual-form input{
@@ -369,7 +435,14 @@
   </section>
 
   <section>
-    <div class="section-head"><h2>Add entry</h2></div>
+    <div class="section-head">
+      <h2>Add entry</h2>
+      <span class="hint">search or type your own</span>
+    </div>
+    <div class="search-wrap">
+      <input type="text" id="foodSearch" placeholder="Search a food, e.g. kitkat chunky caramel" autocomplete="off">
+      <div class="search-results" id="searchResults"></div>
+    </div>
     <form class="manual-form" id="manualForm">
       <input type="text" name="name" placeholder="What did you eat?" required>
       <input type="number" name="kcal" placeholder="kcal" required min="0">
@@ -612,6 +685,86 @@
     renderAll();
     targetSection.style.display = 'none';
   });
+
+  // ---------- food search (Open Food Facts) ----------
+  const foodSearch = document.getElementById('foodSearch');
+  const searchResults = document.getElementById('searchResults');
+  let searchTimer = null;
+
+  foodSearch.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    const q = foodSearch.value.trim();
+    if(q.length < 3){
+      searchResults.style.display = 'none';
+      searchResults.innerHTML = '';
+      return;
+    }
+    searchTimer = setTimeout(() => runFoodSearch(q), 450);
+  });
+
+  document.addEventListener('click', (ev) => {
+    if(!ev.target.closest('.search-wrap')) searchResults.style.display = 'none';
+  });
+
+  async function runFoodSearch(q){
+    searchResults.style.display = 'block';
+    searchResults.innerHTML = '<div class="status">Searching…</div>';
+    try{
+      const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=8`;
+      const res = await fetch(url);
+      const data = await res.json();
+      const products = (data.products || []).filter(p =>
+        p.product_name &&
+        p.nutriments &&
+        (p.nutriments['energy-kcal_serving'] || p.nutriments['energy-kcal_100g'])
+      );
+
+      if(products.length === 0){
+        searchResults.innerHTML = '<div class="status">No matches — add it manually below.</div>';
+        return;
+      }
+
+      searchResults.innerHTML = '';
+      products.slice(0, 8).forEach(p => {
+        const kcalServing = p.nutriments['energy-kcal_serving'];
+        const kcal100 = p.nutriments['energy-kcal_100g'];
+        const useServing = !!kcalServing;
+        const kcalShown = Math.round(useServing ? kcalServing : kcal100);
+        const label = useServing
+          ? `${kcalShown} kcal${p.serving_size ? ' / ' + p.serving_size : ' / serving'}`
+          : `${kcalShown} kcal / 100g`;
+        const brand = p.brands ? p.brands.split(',')[0].trim() : '';
+
+        const item = document.createElement('div');
+        item.className = 'item';
+        item.innerHTML = `
+          <span>
+            <span class="fname">${escapeHtml(p.product_name)}</span>
+            ${brand ? `<span class="brand">${escapeHtml(brand)}</span>` : ''}
+          </span>
+          <span class="kcal">${label}</span>
+        `;
+        item.addEventListener('click', () => {
+          const nameField = document.querySelector('#manualForm input[name="name"]');
+          const kcalField = document.querySelector('#manualForm input[name="kcal"]');
+          nameField.value = p.product_name + (brand ? ` (${brand})` : '') + (useServing ? '' : ' — 100g');
+          kcalField.value = kcalShown;
+          searchResults.style.display = 'none';
+          foodSearch.value = '';
+          kcalField.focus();
+        });
+        searchResults.appendChild(item);
+      });
+
+      const attr = document.createElement('div');
+      attr.className = 'attribution';
+      attr.textContent = 'Data: Open Food Facts — figures may be per 100g, check before logging';
+      searchResults.appendChild(attr);
+
+    }catch(e){
+      searchResults.innerHTML = '<div class="status">Search failed — check your connection, or add it manually below.</div>';
+    }
+  }
 
   // ---------- manual add form ----------
   document.getElementById('manualForm').addEventListener('submit', (ev) => {
