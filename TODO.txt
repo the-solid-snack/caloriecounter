@@ -1,0 +1,7 @@
+Make the calorie objective modifiable per day (some days you'll have extra physical activity, meaning extra budget)
+Make the TOTAL deficit display per month, not overall total 
+Add visuals (consumption vs budget over time is an example), there's plenty of space on the side
+"Stored locally in this browser · nothing leaves your device" well that just ain't true :D 
+Add a profile for Merilin, with a profile picker 
+Query Samsung health / fitbit data ? 
+Allow edit time of entry (default : time of entry)

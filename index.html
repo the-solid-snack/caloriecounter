@@ -871,6 +871,12 @@
   const searchResults = document.getElementById('searchResults');
   let searchTimer = null;
 
+  // OFF's search endpoint is capped at ~10 requests/minute, so we debounce
+  // generously, cache repeat queries, and enforce a minimum gap between calls.
+  const searchCache = new Map(); // query -> raw products array
+  let lastRequestAt = 0;
+  const MIN_GAP_MS = 2200;
+
   foodSearch.addEventListener('input', () => {
     clearTimeout(searchTimer);
     const q = foodSearch.value.trim();
@@ -879,7 +885,7 @@
       searchResults.innerHTML = '';
       return;
     }
-    searchTimer = setTimeout(() => runFoodSearch(q), 450);
+    searchTimer = setTimeout(() => runFoodSearch(q), 650);
   });
 
   document.addEventListener('click', (ev) => {
@@ -892,6 +898,7 @@
   async function fetchNewSearch(q){
     const url = `https://search.openfoodfacts.org/search?q=${encodeURIComponent(q)}&page_size=8&langs=en`;
     const res = await fetch(url);
+    if(res.status === 429) throw new Error('rate limited');
     if(!res.ok) throw new Error('new endpoint http ' + res.status);
     const data = await res.json();
     return data.hits || [];
@@ -899,6 +906,7 @@
   async function fetchLegacySearch(q){
     const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=8`;
     const res = await fetch(url);
+    if(res.status === 429) throw new Error('rate limited');
     if(!res.ok) throw new Error('legacy endpoint http ' + res.status);
     const data = await res.json();
     return data.products || [];
@@ -906,28 +914,54 @@
 
   async function runFoodSearch(q){
     searchResults.style.display = 'block';
+
+    if(searchCache.has(q)){
+      renderSearchResults(searchCache.get(q));
+      return;
+    }
+
+    const sinceLast = Date.now() - lastRequestAt;
+    if(sinceLast < MIN_GAP_MS){
+      searchResults.innerHTML = '<div class="status">Searching…</div>';
+      await new Promise(r => setTimeout(r, MIN_GAP_MS - sinceLast));
+      // if the user kept typing, a newer call has already taken over
+      if(foodSearch.value.trim() !== q) return;
+    }
+
     searchResults.innerHTML = '<div class="status">Searching…</div>';
+    lastRequestAt = Date.now();
 
     let rawProducts = null;
     let lastError = null;
+    let rateLimited = false;
 
     try{
       rawProducts = await fetchNewSearch(q);
     }catch(e){
       lastError = e;
+      if(e.message === 'rate limited') rateLimited = true;
       try{
         rawProducts = await fetchLegacySearch(q);
         lastError = null;
       }catch(e2){
         lastError = e2;
+        if(e2.message === 'rate limited') rateLimited = true;
       }
     }
 
     if(rawProducts === null){
       console.error('Food search failed on both endpoints:', lastError);
-      searchResults.innerHTML = '<div class="status">Open Food Facts isn\'t responding right now — add it manually below.</div>';
+      searchResults.innerHTML = rateLimited
+        ? '<div class="status">Searched too much too fast — wait a few seconds and try again, or add it manually below.</div>'
+        : '<div class="status">Open Food Facts isn\'t responding right now — add it manually below.</div>';
       return;
     }
+
+    searchCache.set(q, rawProducts);
+    renderSearchResults(rawProducts);
+  }
+
+  function renderSearchResults(rawProducts){
 
     try{
       const products = rawProducts.filter(p =>
