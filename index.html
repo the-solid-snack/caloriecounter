@@ -64,6 +64,17 @@
     color:var(--muted);
     text-align:right;
   }
+  .sync-line{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10px;
+    color:var(--muted);
+    text-align:right;
+    margin:-14px 0 20px;
+    text-transform:uppercase;
+    letter-spacing:.04em;
+  }
+  .sync-line a{color:var(--ink);text-decoration:underline;}
+  .sync-line a.signout{color:var(--muted);}
 
   /* ---- Stamp ---- */
   .stamp-row{
@@ -267,6 +278,38 @@
     font-family:'IBM Plex Mono',monospace;
   }
 
+  /* ---- Date nav ---- */
+  .date-nav{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:10px;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12px;
+  }
+  .date-nav button{
+    background:var(--paper-2);
+    border:1px solid var(--rule);
+    border-radius:2px;
+    width:26px;height:26px;
+    cursor:pointer;
+    font-size:14px;
+    line-height:1;
+    color:var(--ink);
+  }
+  .date-nav button:hover{background:var(--ink);color:var(--paper);}
+  #selectedDateLabel{
+    color:var(--muted);
+    min-width:150px;
+  }
+  #jumpTodayBtn{
+    width:auto;
+    padding:0 10px;
+    text-transform:uppercase;
+    letter-spacing:.05em;
+    font-size:10px;
+  }
+
   /* ---- Entry list ---- */
   .entries{list-style:none;margin:0;padding:0;}
   .entries li{
@@ -299,6 +342,56 @@
     line-height:1;
   }
   .entries li .del:hover{color:var(--red);}
+  .entries li .edit{
+    background:none;border:none;
+    color:var(--muted);
+    cursor:pointer;
+    font-size:12px;
+    margin-left:10px;
+    line-height:1;
+    font-family:'IBM Plex Mono',monospace;
+    text-decoration:underline;
+  }
+  .entries li .edit:hover{color:var(--ink);}
+  .entries li.editing{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:8px 0;
+  }
+  .entries li.editing input[name="ename"]{
+    flex:1;
+    font-family:'IBM Plex Sans',sans-serif;
+    background:var(--paper);
+    border:1px solid var(--ink);
+    border-radius:2px;
+    padding:6px 8px;
+    font-size:13px;
+  }
+  .entries li.editing input[name="ekcal"]{
+    width:70px;
+    font-family:'IBM Plex Mono',monospace;
+    background:var(--paper);
+    border:1px solid var(--ink);
+    border-radius:2px;
+    padding:6px 8px;
+    font-size:13px;
+  }
+  .entries li.editing button{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11px;
+    border:1px solid var(--ink);
+    border-radius:2px;
+    background:var(--ink);
+    color:var(--paper);
+    padding:6px 10px;
+    cursor:pointer;
+  }
+  .entries li.editing button.cancel{
+    background:none;
+    color:var(--muted);
+    border-color:var(--rule);
+  }
   .empty-note{
     color:var(--muted);
     font-size:13px;
@@ -405,6 +498,8 @@
     <div class="today-date" id="todayDate"></div>
   </header>
 
+  <div class="sync-line" id="syncStatus"></div>
+
   <div class="stamp-row">
     <div class="stamp even" id="stamp">
       <div class="n" id="stampN">–</div>
@@ -440,7 +535,7 @@
       <span class="hint">search or type your own</span>
     </div>
     <div class="search-wrap">
-      <input type="text" id="foodSearch" placeholder="Search a food, e.g. hardboiled egg" autocomplete="off">
+      <input type="text" id="foodSearch" placeholder="Search a food, e.g. kitkat chunky caramel" autocomplete="off">
       <div class="search-results" id="searchResults"></div>
     </div>
     <form class="manual-form" id="manualForm">
@@ -455,8 +550,14 @@
 
   <section>
     <div class="section-head">
-      <h2>Today</h2>
+      <h2 id="entriesHeading">Today</h2>
       <span class="hint" id="entryCount"></span>
+    </div>
+    <div class="date-nav">
+      <button type="button" id="prevDayBtn" title="Previous day">‹</button>
+      <span id="selectedDateLabel"></span>
+      <button type="button" id="nextDayBtn" title="Next day">›</button>
+      <button type="button" id="jumpTodayBtn" style="display:none;">today</button>
     </div>
     <ul class="entries" id="todayList"></ul>
     <div class="today-total-line">
@@ -512,6 +613,7 @@
   }
   function saveState(){
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    queueCloudSync();
   }
 
   let state = loadState();
@@ -541,6 +643,35 @@
   }
 
   document.getElementById('todayDate').textContent = fmtDate(new Date());
+
+  // ---------- selected date (for viewing/editing past days) ----------
+  let selectedDate = todayKey();
+
+  function renderDateNav(){
+    const isToday = selectedDate === todayKey();
+    const d = new Date(selectedDate + 'T00:00:00');
+    document.getElementById('entriesHeading').textContent = isToday ? 'Today' : 'Entries';
+    document.getElementById('selectedDateLabel').textContent = isToday
+      ? 'Today, ' + d.toLocaleDateString(undefined, { day:'numeric', month:'short' })
+      : d.toLocaleDateString(undefined, { weekday:'short', day:'numeric', month:'short', year:'numeric' });
+    document.getElementById('jumpTodayBtn').style.display = isToday ? 'none' : 'inline-block';
+  }
+  function shiftSelectedDate(days){
+    editingEntryId = null;
+    const d = new Date(selectedDate + 'T00:00:00');
+    d.setDate(d.getDate() + days);
+    selectedDate = todayKey(d);
+    renderDateNav();
+    renderToday();
+  }
+  document.getElementById('prevDayBtn').addEventListener('click', () => shiftSelectedDate(-1));
+  document.getElementById('nextDayBtn').addEventListener('click', () => shiftSelectedDate(1));
+  document.getElementById('jumpTodayBtn').addEventListener('click', () => {
+    editingEntryId = null;
+    selectedDate = todayKey();
+    renderDateNav();
+    renderToday();
+  });
 
   // ---------- entries for today ----------
   function entriesForDay(dayKey){
@@ -589,6 +720,9 @@
     div.textContent = s;
     return div.innerHTML;
   }
+  function escapeAttr(s){
+    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
 
   // ---------- add / delete entries ----------
   function addEntry(name, kcal, saveFav){
@@ -596,7 +730,7 @@
     state.entries.push({
       id: Date.now() + '_' + Math.random().toString(36).slice(2,7),
       name, kcal: Number(kcal),
-      date: todayKey(now),
+      date: selectedDate,
       ts: now.toISOString()
     });
     if(saveFav){
@@ -612,35 +746,81 @@
     renderAll();
   }
 
-  // ---------- render today list ----------
+  function updateEntry(id, name, kcal){
+    const e = state.entries.find(e => e.id === id);
+    if(!e) return;
+    e.name = name;
+    e.kcal = Number(kcal);
+    editingEntryId = null;
+    saveState();
+    renderAll();
+  }
+
+  let editingEntryId = null;
+
+  // ---------- render entry list for selectedDate ----------
   function renderToday(){
+    renderDateNav();
     const list = document.getElementById('todayList');
-    const key = todayKey();
-    const todays = entriesForDay(key).sort((a,b) => a.ts.localeCompare(b.ts));
+    const dayEntries = entriesForDay(selectedDate).sort((a,b) => a.ts.localeCompare(b.ts));
+    const isToday = selectedDate === todayKey();
     list.innerHTML = '';
-    if(todays.length === 0){
-      list.innerHTML = '<li class="empty-note" style="border:none;">Nothing logged yet today.</li>';
+    if(dayEntries.length === 0){
+      list.innerHTML = `<li class="empty-note" style="border:none;">Nothing logged ${isToday ? 'yet today' : 'for this day'}.</li>`;
     } else {
-      todays.forEach(e => {
+      dayEntries.forEach(e => {
         const li = document.createElement('li');
-        const t = new Date(e.ts);
-        const time = String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
-        li.innerHTML = `
-          <span class="time">${time}</span>
-          <span class="name">${escapeHtml(e.name)}</span>
-          <span class="kcal">${e.kcal} kcal</span>
-          <button class="del" title="delete" data-id="${e.id}">×</button>
-        `;
-        li.querySelector('.del').addEventListener('click', () => deleteEntry(e.id));
+
+        if(editingEntryId === e.id){
+          li.className = 'editing';
+          li.innerHTML = `
+            <input type="text" name="ename" value="${escapeAttr(e.name)}">
+            <input type="number" name="ekcal" value="${e.kcal}" min="0">
+            <button type="button" class="save">Save</button>
+            <button type="button" class="cancel">Cancel</button>
+          `;
+          li.querySelector('.save').addEventListener('click', () => {
+            const newName = li.querySelector('input[name="ename"]').value.trim();
+            const newKcal = Number(li.querySelector('input[name="ekcal"]').value);
+            if(!newName || !(newKcal >= 0)) return;
+            updateEntry(e.id, newName, newKcal);
+          });
+          li.querySelector('.cancel').addEventListener('click', () => {
+            editingEntryId = null;
+            renderToday();
+          });
+        } else {
+          const t = new Date(e.ts);
+          const time = String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
+          li.innerHTML = `
+            <span class="time">${time}</span>
+            <span class="name">${escapeHtml(e.name)}</span>
+            <span class="kcal">${e.kcal} kcal</span>
+            <button class="edit" title="edit" data-id="${e.id}">edit</button>
+            <button class="del" title="delete" data-id="${e.id}">×</button>
+          `;
+          li.querySelector('.edit').addEventListener('click', () => {
+            editingEntryId = e.id;
+            renderToday();
+          });
+          li.querySelector('.del').addEventListener('click', () => deleteEntry(e.id));
+        }
         list.appendChild(li);
       });
     }
-    document.getElementById('entryCount').textContent = todays.length + (todays.length===1 ? ' entry' : ' entries');
-    const total = totalFor(todays);
+    document.getElementById('entryCount').textContent = dayEntries.length + (dayEntries.length===1 ? ' entry' : ' entries');
+    const total = totalFor(dayEntries);
     document.getElementById('todayTotalLine').textContent = total + ' kcal';
+
+    renderStamp();
+  }
+
+  // ---------- hero stamp: always reflects the REAL today, regardless of selectedDate ----------
+  function renderStamp(){
+    const todaysReal = entriesForDay(todayKey());
+    const total = totalFor(todaysReal);
     document.getElementById('todayTotalBig').textContent = total + ' kcal today';
 
-    // stamp
     const stamp = document.getElementById('stamp');
     const stampN = document.getElementById('stampN');
     const stampL = document.getElementById('stampL');
@@ -706,14 +886,51 @@
     if(!ev.target.closest('.search-wrap')) searchResults.style.display = 'none';
   });
 
+  // Tries the newer Search-a-licious endpoint first, falls back to the legacy
+  // endpoint if that fails (Open Food Facts' API layer is unstable as of Aug 2026).
+  // Both are normalized to a plain array of product objects.
+  async function fetchNewSearch(q){
+    const url = `https://search.openfoodfacts.org/search?q=${encodeURIComponent(q)}&page_size=8&langs=en`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('new endpoint http ' + res.status);
+    const data = await res.json();
+    return data.hits || [];
+  }
+  async function fetchLegacySearch(q){
+    const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=8`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('legacy endpoint http ' + res.status);
+    const data = await res.json();
+    return data.products || [];
+  }
+
   async function runFoodSearch(q){
     searchResults.style.display = 'block';
     searchResults.innerHTML = '<div class="status">Searching…</div>';
+
+    let rawProducts = null;
+    let lastError = null;
+
     try{
-      const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=8`;
-      const res = await fetch(url);
-      const data = await res.json();
-      const products = (data.products || []).filter(p =>
+      rawProducts = await fetchNewSearch(q);
+    }catch(e){
+      lastError = e;
+      try{
+        rawProducts = await fetchLegacySearch(q);
+        lastError = null;
+      }catch(e2){
+        lastError = e2;
+      }
+    }
+
+    if(rawProducts === null){
+      console.error('Food search failed on both endpoints:', lastError);
+      searchResults.innerHTML = '<div class="status">Open Food Facts isn\'t responding right now — add it manually below.</div>';
+      return;
+    }
+
+    try{
+      const products = rawProducts.filter(p =>
         p.product_name &&
         p.nutriments &&
         (p.nutriments['energy-kcal_serving'] || p.nutriments['energy-kcal_100g'])
@@ -762,7 +979,8 @@
       searchResults.appendChild(attr);
 
     }catch(e){
-      searchResults.innerHTML = '<div class="status">Search failed — check your connection, or add it manually below.</div>';
+      console.error('Food search render failed:', e);
+      searchResults.innerHTML = '<div class="status">Something went wrong showing results — add it manually below.</div>';
     }
   }
 
@@ -860,8 +1078,71 @@
     renderHistory();
   }
 
+  // ---------- cloud sync (Azure Static Web Apps auth + /api/state) ----------
+  let cloudUser = null;
+  let syncTimer = null;
+
+  async function checkAuth(){
+    try{
+      const res = await fetch('/.auth/me');
+      const data = await res.json();
+      return data.clientPrincipal || null;
+    }catch(e){
+      return null; // e.g. running locally without the SWA auth emulator
+    }
+  }
+
+  function renderSyncStatus(){
+    const el = document.getElementById('syncStatus');
+    if(cloudUser){
+      el.innerHTML = `Synced as ${escapeHtml(cloudUser.userDetails)} · <a class="signout" href="/.auth/logout?post_logout_redirect_uri=/">sign out</a>`;
+    } else {
+      el.innerHTML = `Not synced · <a href="/.auth/login/github?post_login_redirect_uri=/">sign in to sync across devices</a>`;
+    }
+  }
+
+  async function initCloudSync(){
+    cloudUser = await checkAuth();
+    renderSyncStatus();
+    if(!cloudUser) return;
+
+    try{
+      const res = await fetch('/api/state');
+      if(res.ok){
+        const body = await res.json();
+        if(body && body.data){
+          state = JSON.parse(body.data);
+          if(!Array.isArray(state.favourites)) state.favourites = DEFAULT_FAVS;
+          if(!Array.isArray(state.entries)) state.entries = [];
+          localStorage.setItem(STORE_KEY, JSON.stringify(state));
+          renderFavs();
+          renderAll();
+        }
+      }
+    }catch(e){
+      console.error('Cloud load failed:', e);
+    }
+  }
+
+  function queueCloudSync(){
+    if(!cloudUser) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(async () => {
+      try{
+        await fetch('/api/state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: JSON.stringify(state) })
+        });
+      }catch(e){
+        console.error('Cloud sync failed:', e);
+      }
+    }, 800);
+  }
+
   renderFavs();
   renderAll();
+  initCloudSync();
 })();
 </script>
 </body>
