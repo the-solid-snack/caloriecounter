@@ -1,6 +1,7 @@
 const { TableClient } = require('@azure/data-tables');
 
 const TABLE_NAME = 'LedgerState';
+const PROFILES = ['MA', 'MM'];
 let clientPromise = null;
 
 function getClient(){
@@ -25,6 +26,13 @@ function getUserId(req){
   }
 }
 
+// MA keeps the original rowKey ('state') so existing synced data isn't
+// orphaned by this change. MM (and any future profile) gets its own row.
+function rowKeyFor(profile){
+  const p = PROFILES.includes(profile) ? profile : 'MA';
+  return p === 'MA' ? 'state' : `state:${p}`;
+}
+
 module.exports = async function (context, req) {
   const userId = getUserId(req);
   if(!userId){
@@ -42,11 +50,12 @@ module.exports = async function (context, req) {
   }
 
   if(req.method === 'GET'){
+    const rowKey = rowKeyFor(req.query && req.query.profile);
     try{
-      const entity = await client.getEntity(userId, 'state');
+      const entity = await client.getEntity(userId, rowKey);
       context.res = { status: 200, headers: { 'Content-Type': 'application/json' }, body: { data: entity.data } };
     }catch(e){
-      // no saved state yet for this user
+      // no saved state yet for this user/profile
       context.res = { status: 200, headers: { 'Content-Type': 'application/json' }, body: { data: null } };
     }
     return;
@@ -58,8 +67,9 @@ module.exports = async function (context, req) {
       context.res = { status: 400, body: { error: 'Expected { data: "<json string>" }' } };
       return;
     }
+    const rowKey = rowKeyFor(body.profile);
     try{
-      await client.upsertEntity({ partitionKey: userId, rowKey: 'state', data: body.data }, 'Replace');
+      await client.upsertEntity({ partitionKey: userId, rowKey, data: body.data }, 'Replace');
       context.res = { status: 200, body: { ok: true } };
     }catch(e){
       context.log.error('Cosmos write error', e);
