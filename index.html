@@ -953,7 +953,15 @@
       console.error('Food search failed on both endpoints:', lastError);
       searchResults.innerHTML = rateLimited
         ? '<div class="status">Searched too much too fast — wait a few seconds and try again, or add it manually below.</div>'
-        : '<div class="status">Open Food Facts isn\'t responding right now — add it manually below.</div>';
+        : '<div class="status">Open Food Facts isn\'t responding right now. <a href="#" id="retrySearchLink" style="color:inherit;">Try again</a>, or add it manually below.</div>';
+      const retryLink = document.getElementById('retrySearchLink');
+      if(retryLink){
+        retryLink.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          searchCache.delete(q);
+          runFoodSearch(q);
+        });
+      }
       return;
     }
 
