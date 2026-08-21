@@ -279,8 +279,25 @@
     margin-bottom:12px;
   }
   .fav-search:focus{outline:2px solid var(--ink);outline-offset:1px;border-color:var(--ink);}
-  .chips{display:flex;flex-wrap:wrap;gap:8px;overflow:hidden;}
-  .chips.capped{max-height:118px;}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;align-content:flex-start;}
+  /* Capped, but scrollable rather than clipped: the part-visible row at the
+     bottom is the cue that there is more, and "show all" still unfolds it. */
+  .chips.capped{
+    max-height:152px;
+    overflow-y:auto;
+    overscroll-behavior:contain;
+    padding-right:6px;
+    scrollbar-width:thin;
+    scrollbar-color:var(--rule-strong) transparent;
+  }
+  .chips.capped::-webkit-scrollbar{width:9px;}
+  .chips.capped::-webkit-scrollbar-track{background:transparent;}
+  .chips.capped::-webkit-scrollbar-thumb{
+    background:var(--rule-strong);
+    border-radius:5px;
+    border:2px solid var(--paper);
+  }
+  .chips.capped::-webkit-scrollbar-thumb:hover{background:var(--muted);}
   .show-more-btn{
     display:block;
     margin-top:8px;
@@ -396,9 +413,21 @@
   }
   .search-results .status{
     padding:12px;
-    font-size:12px;
+    font-size:13px;
     color:var(--muted);
     font-style:italic;
+  }
+  .search-results .result-head{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10.5px;
+    text-transform:uppercase;
+    letter-spacing:.07em;
+    color:var(--muted);
+    background:var(--paper-3);
+    padding:5px 12px;
+    border-bottom:1px solid var(--rule-strong);
+    position:sticky;
+    top:0;
   }
   .search-results .attribution{
     padding:6px 12px;
@@ -1558,12 +1587,15 @@
   foodSearch.addEventListener('input', () => {
     clearTimeout(searchTimer);
     const q = foodSearch.value.trim();
-    if(q.length < 3){
+    if(q.length < 2){
       searchResults.style.display = 'none';
       searchResults.innerHTML = '';
       return;
     }
-    searchTimer = setTimeout(() => runFoodSearch(q), 650);
+    // Your own catalogue needs no network, so it paints immediately; the
+    // remote lookup is still debounced and slots in underneath when it lands.
+    renderResults(q, { state: q.length < 3 ? 'idle' : 'pending' });
+    if(q.length >= 3) searchTimer = setTimeout(() => runFoodSearch(q), 650);
   });
 
   document.addEventListener('click', (ev) => {
@@ -1594,19 +1626,19 @@
     searchResults.style.display = 'block';
 
     if(searchCache.has(q)){
-      renderSearchResults(searchCache.get(q));
+      renderResults(q, { state: 'done', products: searchCache.get(q) });
       return;
     }
 
     const sinceLast = Date.now() - lastRequestAt;
     if(sinceLast < MIN_GAP_MS){
-      searchResults.innerHTML = '<div class="status">Searching…</div>';
+      renderResults(q, { state: 'pending' });
       await new Promise(r => setTimeout(r, MIN_GAP_MS - sinceLast));
       // if the user kept typing, a newer call has already taken over
       if(foodSearch.value.trim() !== q) return;
     }
 
-    searchResults.innerHTML = '<div class="status">Searching…</div>';
+    renderResults(q, { state: 'pending' });
     lastRequestAt = Date.now();
 
     let rawProducts = null;
@@ -1629,9 +1661,12 @@
 
     if(rawProducts === null){
       console.error('Food search failed on both endpoints:', lastError);
-      searchResults.innerHTML = rateLimited
-        ? '<div class="status">Searched too much too fast — wait a few seconds and try again, or add it manually below.</div>'
-        : '<div class="status">Open Food Facts isn\'t responding right now. <a href="#" id="retrySearchLink" style="color:inherit;">Try again</a>, or add it manually below.</div>';
+      renderResults(q, {
+        state: 'error',
+        html: rateLimited
+          ? '<div class="status">Searched too much too fast — wait a few seconds and try again, or add it manually below.</div>'
+          : '<div class="status">Open Food Facts isn\'t responding right now. <a href="#" id="retrySearchLink" style="color:inherit;">Try again</a>, or add it manually below.</div>'
+      });
       const retryLink = document.getElementById('retrySearchLink');
       if(retryLink){
         retryLink.addEventListener('click', (ev) => {
@@ -1644,68 +1679,131 @@
     }
 
     searchCache.set(q, rawProducts);
-    renderSearchResults(rawProducts);
+    renderResults(q, { state: 'done', products: rawProducts });
   }
 
-  function renderSearchResults(rawProducts){
+  // Items you already have, ranked favourites-first then by recent use.
+  function localMatches(q){
+    const s = q.trim().toLowerCase();
+    if(s.length < 2) return [];
+    const counts = usageCounts(30);
+    return state.items
+      .filter(i => !i.archived && i.name.toLowerCase().includes(s))
+      .sort((a, b) =>
+        (Number(b.favourite) - Number(a.favourite)) ||
+        ((counts[b.id] || 0) - (counts[a.id] || 0)) ||
+        a.name.localeCompare(b.name))
+      .slice(0, 6);
+  }
 
+  function resultHead(text){
+    const d = document.createElement('div');
+    d.className = 'result-head';
+    d.textContent = text;
+    return d;
+  }
+
+  function localResultRow(item){
+    const row = document.createElement('div');
+    row.className = 'item';
+    const n = Math.round(perUnitToDisplay(Math.abs(item.kcalPerUnit), item.unit));
+    const sign = item.kind === 'activity' ? '-' : '+';
+    const note = (item.favourite ? 'in your favourites' : 'logged before') +
+                 (item.kind === 'activity' ? ' · activity' : '');
+    row.innerHTML =
+      `<span><span class="fname">${escapeHtml(item.name)}</span>` +
+      `<span class="brand">${escapeHtml(note)}</span></span>` +
+      `<span class="kcal">${sign}${n}${escapeHtml(unitSuffix(item.unit))}</span>`;
+    row.addEventListener('click', () => {
+      searchResults.style.display = 'none';
+      foodSearch.value = '';
+      if(item.unit === 'unit') logItem(item, 1);
+      else openQtyPrompt(item);
+    });
+    return row;
+  }
+
+  function offResultRow(p){
+    const kcalServing = p.nutriments['energy-kcal_serving'];
+    const kcal100 = p.nutriments['energy-kcal_100g'];
+    const useServing = !!kcalServing;
+    const kcalShown = Math.round(useServing ? kcalServing : kcal100);
+    const label = useServing
+      ? `${kcalShown} kcal${p.serving_size ? ' / ' + p.serving_size : ' / serving'}`
+      : `${kcalShown} kcal / 100g`;
+    const brand = p.brands ? p.brands.split(',')[0].trim() : '';
+
+    const row = document.createElement('div');
+    row.className = 'item';
+    row.innerHTML = `
+      <span>
+        <span class="fname">${escapeHtml(p.product_name)}</span>
+        ${brand ? `<span class="brand">${escapeHtml(brand)}</span>` : ''}
+      </span>
+      <span class="kcal">${label}</span>
+    `;
+    row.addEventListener('click', () => {
+      const name = p.product_name + (brand ? ` (${brand})` : '');
+      searchResults.style.display = 'none';
+      foodSearch.value = '';
+      if(useServing){
+        // a per-serving figure is already "one of them"
+        logItem(findOrCreateItem(name, kcalShown, 'food', 'unit'), 1);
+      } else {
+        // a per-100g figure becomes a gram-measured item, so it asks how
+        // much rather than silently logging 100g
+        const it = findOrCreateItem(name, kcalShown / 100, 'food', 'g');
+        saveState();
+        openQtyPrompt(it);
+      }
+    });
+    return row;
+  }
+
+  // Composes one dropdown from two sources: your catalogue (instant) above,
+  // Open Food Facts (debounced, rate-limited) below.
+  function renderResults(q, off){
     try{
-      const products = rawProducts.filter(p =>
-        p.product_name &&
-        p.nutriments &&
-        (p.nutriments['energy-kcal_serving'] || p.nutriments['energy-kcal_100g'])
-      );
+      searchResults.style.display = 'block';
+      searchResults.innerHTML = '';
 
-      if(products.length === 0){
-        searchResults.innerHTML = '<div class="status">No matches — add it manually below.</div>';
-        return;
+      const mine = localMatches(q);
+      if(mine.length){
+        searchResults.appendChild(resultHead('Your items'));
+        mine.forEach(i => searchResults.appendChild(localResultRow(i)));
       }
 
-      searchResults.innerHTML = '';
-      products.slice(0, 8).forEach(p => {
-        const kcalServing = p.nutriments['energy-kcal_serving'];
-        const kcal100 = p.nutriments['energy-kcal_100g'];
-        const useServing = !!kcalServing;
-        const kcalShown = Math.round(useServing ? kcalServing : kcal100);
-        const label = useServing
-          ? `${kcalShown} kcal${p.serving_size ? ' / ' + p.serving_size : ' / serving'}`
-          : `${kcalShown} kcal / 100g`;
-        const brand = p.brands ? p.brands.split(',')[0].trim() : '';
-
-        const item = document.createElement('div');
-        item.className = 'item';
-        item.innerHTML = `
-          <span>
-            <span class="fname">${escapeHtml(p.product_name)}</span>
-            ${brand ? `<span class="brand">${escapeHtml(brand)}</span>` : ''}
-          </span>
-          <span class="kcal">${label}</span>
-        `;
-        item.addEventListener('click', () => {
-          const name = p.product_name + (brand ? ` (${brand})` : '');
-          searchResults.style.display = 'none';
-          foodSearch.value = '';
-          if(useServing){
-            // a per-serving figure is already "one of them"
-            logItem(findOrCreateItem(name, kcalShown, 'food', 'unit'), 1);
-          } else {
-            // a per-100g figure becomes a gram-measured item, so it asks how
-            // much rather than silently logging 100g
-            const it = findOrCreateItem(name, kcalShown / 100, 'food', 'g');
-            saveState();
-            openQtyPrompt(it);
+      if(off.state === 'pending'){
+        searchResults.insertAdjacentHTML('beforeend',
+          '<div class="status">Searching Open Food Facts…</div>');
+      } else if(off.state === 'error'){
+        searchResults.insertAdjacentHTML('beforeend', off.html);
+      } else if(off.state === 'idle'){
+        if(!mine.length){
+          searchResults.insertAdjacentHTML('beforeend',
+            '<div class="status">Keep typing to search Open Food Facts…</div>');
+        }
+      } else if(off.state === 'done'){
+        const products = (off.products || []).filter(p =>
+          p.product_name && p.nutriments &&
+          (p.nutriments['energy-kcal_serving'] || p.nutriments['energy-kcal_100g'])
+        );
+        if(products.length === 0){
+          if(!mine.length){
+            searchResults.insertAdjacentHTML('beforeend',
+              '<div class="status">No matches — add it manually below.</div>');
           }
-        });
-        searchResults.appendChild(item);
-      });
-
-      const attr = document.createElement('div');
-      attr.className = 'attribution';
-      attr.textContent = 'Data: Open Food Facts — figures may be per 100g, check before logging';
-      searchResults.appendChild(attr);
-
+        } else {
+          searchResults.appendChild(resultHead('Open Food Facts'));
+          products.slice(0, 8).forEach(p => searchResults.appendChild(offResultRow(p)));
+          const attr = document.createElement('div');
+          attr.className = 'attribution';
+          attr.textContent = 'Data: Open Food Facts — figures may be per 100g, check before logging';
+          searchResults.appendChild(attr);
+        }
+      }
     }catch(e){
-      console.error('Food search render failed:', e);
+      console.error('Search render failed:', e);
       searchResults.innerHTML = '<div class="status">Something went wrong showing results — add it manually below.</div>';
     }
   }
