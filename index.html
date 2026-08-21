@@ -13,30 +13,53 @@
 <link href="https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --paper:#EDEAE1;
-    --paper-2:#E3DECF;
+    --paper:#F2EFE7;
+    --paper-2:#E7E2D5;
     --paper-3:#DAD3BF;
-    --ink:#232320;
-    --muted:#6B675E;
-    --rule:#C9C2B0;
-    --green:#3A6B52;
-    --green-dim:#3A6B521a;
-    --red:#A13D2E;
-    --red-dim:#A13D2E1a;
+    --ink:#1E1E1B;
+    /* was #6B675E -- about 4.4:1 on paper, under AA at the 10-11px sizes it
+       was used at, and it was used almost everywhere. */
+    --muted:#565046;
+    --faint:#6A6458;          /* secondary, but still clears 4.5:1 on paper */
+    --rule:#C4BCA6;
+    --rule-strong:#A79D84;
+    --green:#33604A;
+    --green-dim:#33604A1a;
+    --red:#993524;
+    --red-dim:#9935241a;
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
   body{
+    /* The ruled-paper gradient used to sit behind every element on the page,
+       including all the text. It read as noise rather than stationery, so it
+       is gone; the ledger character now comes from the rules between rows. */
     background:var(--paper);
-    background-image:
-      repeating-linear-gradient(180deg, transparent, transparent 27px, var(--rule) 28px);
-    background-attachment:local;
     color:var(--ink);
     font-family:'IBM Plex Sans',sans-serif;
+    font-size:16px;
+    line-height:1.5;
     min-height:100vh;
     padding:0 0 80px;
   }
-  .wrap{max-width:640px;margin:0 auto;padding:0 20px;}
+  .wrap{max-width:1160px;margin:0 auto;padding:0 28px;}
+
+  /* Wide screens get two columns: act on the left, read the record on the
+     right. Below 900px it stacks back into the original single flow. */
+  .cols{display:block;}
+  .col{min-width:0;}
+  @media (min-width:900px){
+    .cols{
+      display:grid;
+      grid-template-columns:minmax(0,0.95fr) minmax(0,1.05fr);
+      gap:0 52px;
+      align-items:start;
+    }
+    .col-divider{display:block;}
+  }
+  @media (max-width:899px){
+    .wrap{max-width:660px;padding:0 20px;}
+  }
 
   /* ---- Header ---- */
   header{
@@ -71,11 +94,10 @@
   }
   .sync-line{
     font-family:'IBM Plex Mono',monospace;
-    font-size:10px;
+    font-size:11.5px;
     color:var(--muted);
     text-align:right;
-    text-transform:uppercase;
-    letter-spacing:.04em;
+    letter-spacing:.02em;
   }
   .sync-line a{color:var(--ink);text-decoration:underline;}
   .sync-line a.signout{color:var(--muted);}
@@ -176,8 +198,12 @@
   .stamp-row{
     display:flex;
     align-items:center;
-    gap:20px;
-    margin-bottom:32px;
+    gap:26px;
+    margin-bottom:38px;
+    padding:22px 26px;
+    background:#FBF9F4;
+    border:1px solid var(--rule);
+    border-left:3px solid var(--ink);
   }
   .stamp{
     flex-shrink:0;
@@ -199,9 +225,9 @@
   .stamp.under{color:var(--green);}
   .stamp.over{color:var(--red);}
   .stamp.even{color:var(--muted);}
-  .stamp-meta{font-size:14px;line-height:1.5;}
-  .stamp-meta .big{font-family:'Spectral',serif;font-size:22px;font-weight:600;}
-  .stamp-meta .sub{color:var(--muted);font-size:13px;}
+  .stamp-meta{font-size:15px;line-height:1.5;}
+  .stamp-meta .big{font-family:'Spectral',serif;font-size:32px;font-weight:600;line-height:1.15;}
+  .stamp-meta .sub{color:var(--muted);font-size:14px;margin-top:2px;}
   .target-adjust{margin-top:8px;}
   .target-adjust #editTargetBtn{
     background:none;border:none;
@@ -215,40 +241,42 @@
   .top-date-nav{margin-bottom:16px;}
 
   /* ---- Section ---- */
-  section{margin-bottom:36px;}
+  section{margin-bottom:40px;}
   .section-head{
     display:flex;
     align-items:baseline;
-    justify-content:space-between;
-    margin-bottom:12px;
-    border-bottom:1px solid var(--rule);
-    padding-bottom:6px;
+    gap:12px;
+    margin-bottom:14px;
+    border-bottom:2px solid var(--rule-strong);
+    padding-bottom:7px;
   }
   .section-head h2{
     font-family:'Spectral',serif;
-    font-size:16px;
+    font-size:19px;
     font-weight:600;
     margin:0;
-    text-transform:uppercase;
-    letter-spacing:.06em;
+    letter-spacing:.01em;
+    text-transform:none;      /* uppercase everywhere was hard to read through */
   }
   .section-head .hint{
     font-family:'IBM Plex Mono',monospace;
-    font-size:11px;
-    color:var(--muted);
+    font-size:12px;
+    color:var(--faint);
+    margin-left:auto;
   }
+  .section-head .hint + .sort-btn{margin-left:0;}
 
   /* ---- Favourites chips ---- */
   .fav-search{
     width:100%;
     font-family:'IBM Plex Sans',sans-serif;
-    background:var(--paper-2);
-    border:1px solid var(--rule);
+    background:#FBF9F4;
+    border:1px solid var(--rule-strong);
     border-radius:2px;
-    padding:8px 10px;
-    font-size:13px;
+    padding:10px 12px;
+    font-size:14px;
     color:var(--ink);
-    margin-bottom:10px;
+    margin-bottom:12px;
   }
   .fav-search:focus{outline:2px solid var(--ink);outline-offset:1px;border-color:var(--ink);}
   .chips{display:flex;flex-wrap:wrap;gap:8px;overflow:hidden;}
@@ -270,26 +298,26 @@
   .show-more-btn:hover{color:var(--ink);}
   .no-results{
     color:var(--muted);
-    font-size:13px;
+    font-size:14px;
     font-style:italic;
     padding:4px 0;
   }
   .chip{
-    background:var(--paper-2);
-    border:1px solid var(--ink);
+    background:#FBF9F4;
+    border:1px solid var(--rule-strong);
     border-radius:2px;
-    padding:8px 12px;
-    font-size:13px;
+    padding:9px 13px;
+    font-size:14px;
     cursor:pointer;
     display:flex;
     align-items:center;
-    gap:8px;
+    gap:9px;
     font-family:'IBM Plex Sans',sans-serif;
   }
-  .chip:hover{background:var(--ink);color:var(--paper);}
+  .chip:hover{background:var(--ink);color:var(--paper);border-color:var(--ink);}
   .chip .kcal{
     font-family:'IBM Plex Mono',monospace;
-    font-size:11px;
+    font-size:12px;
     color:var(--muted);
   }
   .chip:hover .kcal{color:var(--paper-2);}
@@ -306,10 +334,10 @@
   .chip .rm:hover{opacity:1;}
   .add-fav-btn{
     background:none;
-    border:1px dashed var(--muted);
+    border:1px dashed var(--rule-strong);
     border-radius:2px;
-    padding:8px 12px;
-    font-size:13px;
+    padding:9px 13px;
+    font-size:14px;
     color:var(--muted);
     cursor:pointer;
   }
@@ -320,11 +348,11 @@
   #foodSearch{
     width:100%;
     font-family:'IBM Plex Sans',sans-serif;
-    background:var(--paper-2);
-    border:1px solid var(--rule);
+    background:#FBF9F4;
+    border:1px solid var(--rule-strong);
     border-radius:2px;
-    padding:10px 12px;
-    font-size:13px;
+    padding:11px 13px;
+    font-size:14px;
     color:var(--ink);
   }
   #foodSearch:focus{outline:2px solid var(--ink);outline-offset:1px;border-color:var(--ink);}
@@ -385,11 +413,11 @@
   .manual-form{display:flex;gap:8px;flex-wrap:wrap;}
   .manual-form input{
     font-family:'IBM Plex Sans',sans-serif;
-    background:var(--paper-2);
-    border:1px solid var(--rule);
+    background:#FBF9F4;
+    border:1px solid var(--rule-strong);
     border-radius:2px;
-    padding:9px 10px;
-    font-size:13px;
+    padding:10px 12px;
+    font-size:14px;
     color:var(--ink);
   }
   .manual-form input:focus{outline:2px solid var(--ink);outline-offset:1px;border-color:var(--ink);}
@@ -451,22 +479,26 @@
     display:flex;
     align-items:center;
     justify-content:space-between;
-    padding:9px 0;
+    padding:11px 0;
     border-bottom:1px solid var(--rule);
-    font-size:14px;
+    font-size:15px;
   }
   .entries li .name{flex:1;}
   .entries li .time{
     font-family:'IBM Plex Mono',monospace;
-    font-size:11px;
-    color:var(--muted);
+    font-size:12px;
+    color:var(--faint);
     margin-right:14px;
+    width:42px;
+    flex-shrink:0;
   }
   .entries li .kcal{
     font-family:'IBM Plex Mono',monospace;
     font-weight:600;
-    width:70px;
+    font-size:14px;
+    width:82px;
     text-align:right;
+    font-variant-numeric:tabular-nums;
   }
   .entries li .del{
     background:none;border:none;
@@ -529,54 +561,56 @@
   }
   .empty-note{
     color:var(--muted);
-    font-size:13px;
+    font-size:14px;
     font-style:italic;
     padding:10px 0;
   }
   .today-total-line{
     display:flex;
     justify-content:space-between;
-    padding-top:10px;
+    padding-top:12px;
     margin-top:4px;
     border-top:2px solid var(--ink);
     font-family:'IBM Plex Mono',monospace;
     font-weight:600;
-    font-size:14px;
+    font-size:15px;
+    font-variant-numeric:tabular-nums;
   }
 
   /* ---- History tabs ---- */
   .tabs{display:flex;gap:4px;margin-bottom:14px;}
   .tab{
     font-family:'IBM Plex Mono',monospace;
-    font-size:11px;
+    font-size:12px;
     text-transform:uppercase;
-    letter-spacing:.08em;
-    padding:7px 14px;
+    letter-spacing:.06em;
+    padding:8px 16px;
     background:var(--paper-2);
-    border:1px solid var(--rule);
+    border:1px solid var(--rule-strong);
     border-radius:2px;
     cursor:pointer;
     color:var(--muted);
   }
   .tab.active{background:var(--ink);color:var(--paper);border-color:var(--ink);}
 
-  table.hist{width:100%;border-collapse:collapse;font-size:13px;}
+  table.hist{width:100%;border-collapse:collapse;font-size:14px;}
   table.hist th{
     text-align:left;
     font-family:'IBM Plex Mono',monospace;
-    font-size:10px;
+    font-size:11px;
     text-transform:uppercase;
     letter-spacing:.06em;
     color:var(--muted);
     font-weight:500;
-    padding-bottom:6px;
+    padding-bottom:7px;
     border-bottom:1px solid var(--ink);
   }
   table.hist th.num, table.hist td.num{text-align:right;}
   table.hist td{
-    padding:8px 0;
+    padding:10px 0;
     border-bottom:1px solid var(--rule);
     font-family:'IBM Plex Mono',monospace;
+    font-variant-numeric:tabular-nums;
   }
   table.hist td.label{font-family:'IBM Plex Sans',sans-serif;}
   .tag-under{color:var(--green);}
@@ -670,6 +704,9 @@
     </div>
   </section>
 
+  <div class="cols">
+  <div class="col">
+
   <section>
     <div class="section-head">
       <h2>Favourites</h2>
@@ -710,6 +747,9 @@
     </form>
   </section>
 
+  </div>
+  <div class="col">
+
   <section>
     <div class="section-head">
       <h2 id="entriesHeading">Today</h2>
@@ -745,6 +785,9 @@
       <span class="val" id="runningVal">0 kcal</span>
     </div>
   </section>
+
+  </div>
+  </div>
 
   <footer>Ledger · your entries, your data</footer>
 </div>
