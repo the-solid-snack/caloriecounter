@@ -28,9 +28,15 @@ function getUserId(req){
 
 // MA keeps the original rowKey ('state') so existing synced data isn't
 // orphaned by this change. MM (and any future profile) gets its own row.
-function rowKeyFor(profile){
+//
+// Each schema version also gets its own row. A v1 client sends no schema and
+// keeps reading and writing the v1 rows, so it can never overwrite v2 state
+// with a shape it doesn't understand -- and the v1 data survives as a rollback.
+function rowKeyFor(profile, schema){
   const p = PROFILES.includes(profile) ? profile : 'MA';
-  return p === 'MA' ? 'state' : `state:${p}`;
+  const v = Number(schema) >= 2 ? Math.floor(Number(schema)) : 1;
+  if(v === 1) return p === 'MA' ? 'state' : `state:${p}`;
+  return p === 'MA' ? `state:v${v}` : `state:v${v}:${p}`;
 }
 
 module.exports = async function (context, req) {
@@ -50,7 +56,7 @@ module.exports = async function (context, req) {
   }
 
   if(req.method === 'GET'){
-    const rowKey = rowKeyFor(req.query && req.query.profile);
+    const rowKey = rowKeyFor(req.query && req.query.profile, req.query && req.query.schema);
     try{
       const entity = await client.getEntity(userId, rowKey);
       context.res = { status: 200, headers: { 'Content-Type': 'application/json' }, body: { data: entity.data } };
@@ -67,7 +73,7 @@ module.exports = async function (context, req) {
       context.res = { status: 400, body: { error: 'Expected { data: "<json string>" }' } };
       return;
     }
-    const rowKey = rowKeyFor(body.profile);
+    const rowKey = rowKeyFor(body.profile, body.schema);
     try{
       await client.upsertEntity({ partitionKey: userId, rowKey, data: body.data }, 'Replace');
       context.res = { status: 200, body: { ok: true } };

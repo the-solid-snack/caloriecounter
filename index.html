@@ -110,6 +110,39 @@
     text-decoration:none;cursor:pointer;
   }
   .session-btn.ghost{background:transparent;color:var(--ink);}
+
+  /* ---- modal form rows ---- */
+  .modal-body{display:flex;flex-direction:column;gap:11px;}
+  .f-row{display:flex;flex-direction:column;gap:4px;font-size:13px;}
+  .f-row > span{font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);}
+  .f-row input,.f-row select{
+    font-family:inherit;font-size:14px;padding:8px 9px;
+    border:1px solid var(--rule);background:var(--paper);color:var(--ink);
+  }
+  .f-hint{font-size:12px;color:var(--muted);}
+  .f-check{display:flex;align-items:center;gap:7px;font-size:13px;}
+
+  /* ---- catalogue chip: edit affordance ---- */
+  .chip .ed{margin-left:6px;opacity:.45;cursor:pointer;font-size:11px;}
+  .chip .ed:hover{opacity:1;}
+
+  /* ---- grouped day rows ---- */
+  #todayList li.group .name .qty,
+  #todayList li .name .qty{
+    font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);
+  }
+  #todayList li.group{font-weight:500;}
+  #todayList li.child{padding-left:22px;opacity:.78;}
+  #todayList li.child .time{font-size:10px;}
+
+  .sort-btn{
+    margin-left:auto;
+    font-family:'IBM Plex Mono',monospace;font-size:10px;
+    text-transform:uppercase;letter-spacing:.05em;
+    background:none;border:1px solid var(--rule);color:var(--muted);
+    padding:3px 7px;cursor:pointer;
+  }
+  .sort-btn:hover{color:var(--ink);border-color:var(--ink);}
   .profile-sync-row{
     display:flex;
     align-items:center;
@@ -641,8 +674,9 @@
     <div class="section-head">
       <h2>Favourites</h2>
       <span class="hint">tap to log now</span>
+      <button type="button" class="sort-btn" id="favSortBtn"></button>
     </div>
-    <input type="text" id="favSearch" class="fav-search" placeholder="Search favourites…" autocomplete="off">
+    <input type="text" id="favSearch" class="fav-search" placeholder="Search everything you've logged…" autocomplete="off">
     <div class="chips" id="favChips"></div>
     <button type="button" class="show-more-btn" id="favShowMoreBtn" style="display:none;"></button>
     <button type="button" class="add-fav-btn" id="addFavBtn" style="margin-top:10px;">+ new favourite</button>
@@ -655,14 +689,6 @@
     </div>
     <div class="chips" id="activityChips"></div>
     <button type="button" class="add-fav-btn" id="addActivityBtn" style="margin-top:10px;">+ new activity</button>
-  </section>
-
-  <section id="recentSection" style="display:none;">
-    <div class="section-head">
-      <h2>Recent</h2>
-      <span class="hint">tap to log now</span>
-    </div>
-    <div class="chips" id="recentChips"></div>
   </section>
 
   <section>
@@ -725,17 +751,23 @@
 
 <script>
 (function(){
-  const STORE_KEY_BASE = 'calorieLedger_v1';
+  const SCHEMA = 2;
+  const STORE_KEY_BASE = 'calorieLedger_v2';
+  const LEGACY_KEY_BASE = 'calorieLedger_v1';
   const PROFILE_KEY = 'calorieLedger_profile';
   const PROFILES = ['MA', 'MM'];
 
   let activeProfile = localStorage.getItem(PROFILE_KEY);
   if(!PROFILES.includes(activeProfile)) activeProfile = 'MA';
 
-  // MA keeps the original storage key so nobody's existing local data
-  // vanishes because of this change; MM gets its own separate key.
+  // v2 lives under its own key, locally and on the server. A v1 page still open
+  // somewhere keeps talking to the v1 key: it can drift, but it cannot write
+  // over v2, and the old data stays on disk as a rollback.
   function storeKeyFor(profile){
     return profile === 'MA' ? STORE_KEY_BASE : `${STORE_KEY_BASE}:${profile}`;
+  }
+  function legacyStoreKeyFor(profile){
+    return profile === 'MA' ? LEGACY_KEY_BASE : `${LEGACY_KEY_BASE}:${profile}`;
   }
 
   const PENDING_KEY_BASE = 'calorieLedger_pending';
@@ -758,25 +790,127 @@
     }catch(e){}
   }
 
-  const DEFAULT_FAVS = [
-    { name: 'Lunch salad', kcal: 420 },
-    { name: 'Slice of bread', kcal: 90 },
-    { name: 'Black coffee', kcal: 2 },
-    { name: 'Porridge, bowl', kcal: 300 },
-  ];
-  const DEFAULT_ACTIVITIES = [
-    { name: 'Walk, 30 min', kcal: -150 },
-    { name: 'Jogging, 1 hr', kcal: -600 },
-    { name: 'Gym session', kcal: -400 },
-    { name: 'Cycling, 1 hr', kcal: -500 },
-  ];
+  // ---------- domain model ----------
+  // An Item is the catalogue entry (a food or an activity). An Entry is one
+  // logged event pointing at an Item. Calories are stored per *single base
+  // unit* -- per 1g, per 1ml, or per 1 item -- so every total is just
+  // qty * kcalPerUnit with no basis field and no divisor to forget. The
+  // per-100g figure people actually read off packaging is converted at the
+  // input box and back again for display, and nowhere else.
+  const UNITS = ['unit', 'g', 'ml'];
+
+  function makeId(){ return Date.now() + '_' + Math.random().toString(36).slice(2,7); }
+  function nowIso(){ return new Date().toISOString(); }
+
+  // The sign lives in the rate: activities carry a negative kcalPerUnit, frozen
+  // onto the entry at log time. That keeps an entry's arithmetic self-contained
+  // even if its item is later edited, re-kinded or archived.
+  function entryKcal(e){
+    return Math.round(Number(e.qty || 0) * Number(e.kcalPerUnit || 0));
+  }
+  function perUnitToDisplay(kcalPerUnit, unit){
+    return unit === 'unit' ? Number(kcalPerUnit) : Number(kcalPerUnit) * 100;
+  }
+  function displayToPerUnit(shown, unit){
+    return unit === 'unit' ? Number(shown) : Number(shown) / 100;
+  }
+  function unitSuffix(unit){
+    return unit === 'unit' ? '' : ' / 100' + unit;
+  }
+  function rateLabel(item){
+    const n = Math.round(perUnitToDisplay(Math.abs(item.kcalPerUnit), item.unit));
+    return (item.kind === 'activity' ? '-' : '') + n + unitSuffix(item.unit);
+  }
+
+  function makeItem(o){
+    return {
+      id: o.id || makeId(),
+      name: String(o.name || '').trim(),
+      kind: o.kind === 'activity' ? 'activity' : 'food',
+      unit: UNITS.includes(o.unit) ? o.unit : 'unit',
+      kcalPerUnit: Number(o.kcalPerUnit || 0),
+      favourite: !!o.favourite,
+      archived: !!o.archived,
+      updatedAt: o.updatedAt || nowIso()
+    };
+  }
+
+  function emptyState(){
+    return {
+      schema: SCHEMA,
+      items: [],
+      entries: [],
+      dayTargets: {},
+      settings: { defaultTarget: null, favSort: 'frequency' }
+    };
+  }
 
   function normalizeState(s){
     if(!s || typeof s !== 'object') s = {};
-    if(!Array.isArray(s.favourites)) s.favourites = DEFAULT_FAVS;
-    if(!Array.isArray(s.activities)) s.activities = DEFAULT_ACTIVITIES;
+    if(!Array.isArray(s.items)) s.items = [];
     if(!Array.isArray(s.entries)) s.entries = [];
+    if(!s.dayTargets || typeof s.dayTargets !== 'object') s.dayTargets = {};
+    if(!s.settings || typeof s.settings !== 'object') s.settings = {};
+    if(s.settings.defaultTarget === undefined) s.settings.defaultTarget = null;
+    if(s.settings.favSort !== 'alpha') s.settings.favSort = 'frequency';
+    s.schema = SCHEMA;
     return s;
+  }
+
+  // ---------- v1 -> v2 migration ----------
+  // Migrated ids are derived from name+kind rather than random, so two devices
+  // that migrate independently land on the *same* id for "Lunch salad" and the
+  // sync merge dedupes them instead of producing twins.
+  function legacyItemId(name, kind){
+    const slug = String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    return 'v1_' + kind + '_' + (slug || 'item');
+  }
+
+  function migrateV1(v1){
+    const out = emptyState();
+    const byId = new Map();
+
+    function ensureItem(name, kcalPerUnit, kind, favourite){
+      const id = legacyItemId(name, kind);
+      let it = byId.get(id);
+      if(!it){
+        it = makeItem({ id, name, kind, unit: 'unit', kcalPerUnit, favourite });
+        byId.set(id, it);
+        out.items.push(it);
+      } else if(favourite){
+        it.favourite = true;         // promote, never demote
+      }
+      return it;
+    }
+
+    (v1.favourites || []).forEach(f => {
+      if(f && f.name != null) ensureItem(f.name, Number(f.kcal) || 0, 'food', true);
+    });
+    (v1.activities || []).forEach(a => {
+      if(a && a.name != null) ensureItem(a.name, -Math.abs(Number(a.kcal) || 0), 'activity', true);
+    });
+
+    (v1.entries || []).forEach(e => {
+      if(!e || !e.id) return;
+      const kcal = Number(e.kcal) || 0;
+      const kind = kcal < 0 ? 'activity' : 'food';
+      // An entry whose name was never a favourite still gets an item, so it can
+      // be grouped, renamed and ranked like everything else.
+      const it = ensureItem(e.name, kcal, kind, false);
+      out.entries.push({
+        id: e.id,                    // preserved verbatim -- the sync merge keys on it
+        itemId: it.id,
+        qty: 1,
+        kcalPerUnit: kcal,           // frozen at the value it was logged with
+        date: e.date,
+        ts: e.ts,
+        updatedAt: e.ts || nowIso()
+      });
+    });
+
+    out.settings.defaultTarget = (Number(v1.target) > 0) ? Number(v1.target) : null;
+    out._lastChange = v1._lastChange || nowIso();
+    return out;
   }
 
   function loadStateFor(profile){
@@ -784,14 +918,34 @@
       const raw = localStorage.getItem(storeKeyFor(profile));
       if(raw) return normalizeState(JSON.parse(raw));
     }catch(e){}
-    return { entries: [], favourites: DEFAULT_FAVS, activities: DEFAULT_ACTIVITIES, target: null };
+    // Nothing under v2 yet: seed once from this device's v1 data, which is left
+    // untouched on disk as a rollback. v1 pages keep reading their own key and
+    // cannot corrupt v2.
+    try{
+      const legacy = localStorage.getItem(legacyStoreKeyFor(profile));
+      if(legacy) return normalizeState(migrateV1(JSON.parse(legacy)));
+    }catch(e){}
+    return normalizeState(seedDefaults(emptyState()));
   }
   function loadState(){ return loadStateFor(activeProfile); }
 
+  function seedDefaults(s){
+    const defs = [
+      ['Lunch salad', 420, 'food'], ['Slice of bread', 90, 'food'],
+      ['Black coffee', 2, 'food'],  ['Porridge, bowl', 300, 'food'],
+      ['Walk, 30 min', -150, 'activity'], ['Jogging, 1 hr', -600, 'activity'],
+      ['Gym session', -400, 'activity'], ['Cycling, 1 hr', -500, 'activity']
+    ];
+    defs.forEach(([name, kcal, kind]) => {
+      s.items.push(makeItem({ id: legacyItemId(name, kind), name, kind, kcalPerUnit: kcal, favourite: true }));
+    });
+    return s;
+  }
+
   function saveState(){
-    // _lastChange lets a merge tell which side edited the non-entry fields
-    // (target, favourites, activities) most recently.
-    state._lastChange = new Date().toISOString();
+    // _lastChange decides the winner for whole-object fields (settings,
+    // conflicting dayTargets). Items and entries carry their own updatedAt.
+    state._lastChange = nowIso();
     localStorage.setItem(storeKeyFor(activeProfile), JSON.stringify(state));
     // Cleared only when the server confirms a 2xx, so an edit made while the
     // session was dead is still known to be un-uploaded after a reload.
@@ -800,6 +954,55 @@
   }
 
   let state = normalizeState(loadState());
+
+  // ---------- item + entry helpers ----------
+  function itemById(id){ return state.items.find(i => i.id === id) || null; }
+
+  function itemLabel(e){
+    const it = itemById(e.itemId);
+    return it ? it.name : (e.label || '—');
+  }
+
+  function findOrCreateItem(name, kcalPerUnit, kind, unit){
+    const key = String(name).trim().toLowerCase();
+    let it = state.items.find(i => i.name.trim().toLowerCase() === key && i.kind === kind && !i.archived);
+    if(it) return it;
+    it = makeItem({ name, kind, unit: unit || 'unit', kcalPerUnit, favourite: false });
+    state.items.push(it);
+    return it;
+  }
+
+  function touchItem(it){ it.updatedAt = nowIso(); }
+
+  // how often each item was logged in the last N days -- drives favourite order
+  function usageCounts(days){
+    const cutoff = Date.now() - days * 86400000;
+    const counts = {};
+    state.entries.forEach(e => {
+      if(!e.itemId) return;
+      if(new Date(e.ts).getTime() < cutoff) return;
+      counts[e.itemId] = (counts[e.itemId] || 0) + 1;
+    });
+    return counts;
+  }
+
+  const FAV_WINDOW_DAYS = 7;
+
+  function favouriteItems(kind){
+    const list = state.items.filter(i => i.favourite && !i.archived && i.kind === kind);
+    if(state.settings.favSort === 'alpha'){
+      return list.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    const counts = usageCounts(FAV_WINDOW_DAYS);
+    return list.sort((a, b) =>
+      (counts[b.id] || 0) - (counts[a.id] || 0) || a.name.localeCompare(b.name));
+  }
+
+  function targetFor(dateKey){
+    const d = state.dayTargets[dateKey];
+    if(Number(d) > 0) return Number(d);
+    return Number(state.settings.defaultTarget) > 0 ? Number(state.settings.defaultTarget) : null;
+  }
 
   // ---------- date helpers ----------
   function todayKey(d = new Date()){
@@ -858,141 +1061,116 @@
     return state.entries.filter(e => e.date === dayKey);
   }
   function totalFor(list){
-    return list.reduce((s,e) => s + Number(e.kcal || 0), 0);
+    return list.reduce((s, e) => s + entryKcal(e), 0);
   }
 
-  // ---------- render favourites ----------
+  // ---------- render catalogue chips ----------
   let favExpanded = false;
   let favQuery = '';
 
-  function makeChip(name, kcal, opts){
-    opts = opts || {};
+  function makeItemChip(item){
     const chip = document.createElement('div');
-    chip.className = 'chip' + (opts.variant === 'activity' ? ' chip-activity' : '');
-    const kcalLabel = kcal > 0 ? `+${kcal}` : kcal;
-    chip.innerHTML = `<span>${escapeHtml(name)}</span><span class="kcal">${kcalLabel}</span>` +
-      (opts.removable ? `<span class="rm" title="remove">×</span>` : '');
+    chip.className = 'chip' + (item.kind === 'activity' ? ' chip-activity' : '');
+    const n = Math.round(perUnitToDisplay(Math.abs(item.kcalPerUnit), item.unit));
+    const sign = item.kind === 'activity' ? '-' : '+';
+    chip.innerHTML =
+      `<span>${escapeHtml(item.name)}</span>` +
+      `<span class="kcal">${sign}${n}${escapeHtml(unitSuffix(item.unit))}</span>` +
+      `<span class="ed" title="edit">✎</span>` +
+      `<span class="rm" title="remove">×</span>`;
+
     chip.addEventListener('click', (ev) => {
-      if(ev.target.classList.contains('rm')){
-        ev.stopPropagation();
-        if(opts.onRemove) opts.onRemove();
-        return;
-      }
-      addEntry(name, kcal);
+      if(ev.target.classList.contains('ed')){ ev.stopPropagation(); openItemEditor(item); return; }
+      if(ev.target.classList.contains('rm')){ ev.stopPropagation(); removeItem(item); return; }
+      // Countable things log straight away, keeping the one-tap flow. Anything
+      // measured by weight or volume has to ask how much.
+      if(item.unit === 'unit') logItem(item, 1);
+      else openQtyPrompt(item);
     });
     return chip;
   }
 
-  function renderFavs(){
-    const wrap = document.getElementById('favChips');
-    const showMoreBtn = document.getElementById('favShowMoreBtn');
+  function renderChipList(wrapId, kind){
+    const wrap = document.getElementById(wrapId);
     wrap.innerHTML = '';
-
     const q = favQuery.trim().toLowerCase();
-    const matches = state.favourites
-      .map((f, i) => ({ f, i }))
-      .filter(({f}) => !q || f.name.toLowerCase().includes(q));
 
-    if(state.favourites.length === 0){
-      wrap.innerHTML = '<div class="no-results">No favourites yet — add one below, or save one while logging an entry.</div>';
-      showMoreBtn.style.display = 'none';
-      return;
+    // With a query we search the whole catalogue, not just favourites -- that is
+    // what makes the old "Recent" section unnecessary: anything ever logged is
+    // an item, so it is findable here.
+    const list = q
+      ? state.items.filter(i => i.kind === kind && !i.archived && i.name.toLowerCase().includes(q))
+      : favouriteItems(kind);
+
+    if(list.length === 0){
+      wrap.innerHTML = q
+        ? `<div class="no-results">Nothing matches “${escapeHtml(favQuery)}”.</div>`
+        : '<div class="no-results">Nothing here yet — add one below, or save one while logging.</div>';
+      return list;
     }
-    if(matches.length === 0){
-      wrap.innerHTML = `<div class="no-results">No favourites match “${escapeHtml(favQuery)}”.</div>`;
-      showMoreBtn.style.display = 'none';
-      return;
-    }
+    list.forEach(i => wrap.appendChild(makeItemChip(i)));
+    return list;
+  }
 
-    matches.forEach(({f, i}) => {
-      const chip = makeChip(f.name, f.kcal, {
-        removable: true,
-        onRemove: () => {
-          state.favourites.splice(i, 1);
-          saveState(); renderFavs();
-        }
-      });
-      wrap.appendChild(chip);
-    });
+  function renderFavs(){
+    const showMoreBtn = document.getElementById('favShowMoreBtn');
+    const wrap = document.getElementById('favChips');
+    const list = renderChipList('favChips', 'food');
+    const q = favQuery.trim();
 
-    const shouldCap = !q && !favExpanded && matches.length > 9;
+    const shouldCap = !q && !favExpanded && list.length > 9;
     wrap.classList.toggle('capped', shouldCap);
-    if(!q && matches.length > 9){
+    if(!q && list.length > 9){
       showMoreBtn.style.display = 'block';
-      showMoreBtn.textContent = favExpanded ? 'Show less' : `Show all (${matches.length})`;
+      showMoreBtn.textContent = favExpanded ? 'Show less' : `Show all (${list.length})`;
     } else {
       showMoreBtn.style.display = 'none';
     }
+    renderFavSort();
+  }
+
+  function renderActivities(){ renderChipList('activityChips', 'activity'); }
+
+  function renderFavSort(){
+    const btn = document.getElementById('favSortBtn');
+    if(!btn) return;
+    const byFreq = state.settings.favSort !== 'alpha';
+    btn.textContent = byFreq ? 'most used' : 'A–Z';
+    btn.title = byFreq
+      ? `Ordered by use in the last ${FAV_WINDOW_DAYS} days — click for A–Z`
+      : 'Ordered A–Z — click for most used';
   }
 
   document.getElementById('favSearch').addEventListener('input', (ev) => {
     favQuery = ev.target.value;
     renderFavs();
+    renderActivities();
   });
   document.getElementById('favShowMoreBtn').addEventListener('click', () => {
     favExpanded = !favExpanded;
     renderFavs();
   });
-  document.getElementById('addFavBtn').addEventListener('click', () => {
-    const name = prompt('Favourite name:');
-    if(!name) return;
-    const kcal = Number(prompt('Calories:'));
-    if(!kcal && kcal !== 0) return;
-    state.favourites.push({ name, kcal });
-    saveState(); renderFavs();
+  document.getElementById('favSortBtn').addEventListener('click', () => {
+    state.settings.favSort = state.settings.favSort === 'alpha' ? 'frequency' : 'alpha';
+    saveState();
+    renderFavs(); renderActivities();
   });
+  document.getElementById('addFavBtn').addEventListener('click', () => openItemEditor(null, 'food'));
+  document.getElementById('addActivityBtn').addEventListener('click', () => openItemEditor(null, 'activity'));
 
-  // ---------- render activities ----------
-  function renderActivities(){
-    const wrap = document.getElementById('activityChips');
-    wrap.innerHTML = '';
-    state.activities.forEach((a, i) => {
-      const chip = makeChip(a.name, a.kcal, {
-        variant: 'activity',
-        removable: true,
-        onRemove: () => {
-          state.activities.splice(i, 1);
-          saveState(); renderActivities();
-        }
-      });
-      wrap.appendChild(chip);
-    });
-  }
-  document.getElementById('addActivityBtn').addEventListener('click', () => {
-    const name = prompt('Activity name (e.g. "Jogging, 1 hr"):');
-    if(!name) return;
-    const burned = Number(prompt('Calories burned:'));
-    if(!burned) return;
-    state.activities.push({ name, kcal: -Math.abs(burned) });
-    saveState(); renderActivities();
-  });
-
-  // ---------- render recent ----------
-  function renderRecent(){
-    const section = document.getElementById('recentSection');
-    const wrap = document.getElementById('recentChips');
-    const RECENT_COUNT = 10;
-
-    const seen = new Set();
-    const recent = [];
-    const sorted = [...state.entries].sort((a,b) => b.ts.localeCompare(a.ts));
-    for(const e of sorted){
-      const key = e.name.trim().toLowerCase();
-      if(seen.has(key)) continue;
-      seen.add(key);
-      recent.push(e);
-      if(recent.length >= RECENT_COUNT) break;
+  function removeItem(item){
+    const used = state.entries.some(e => e.itemId === item.id);
+    if(used){
+      // Archive rather than delete: past entries still point here for their label.
+      if(!confirm(`"${item.name}" has been logged before.\n\nRemove it from the list? Past entries keep their history.`)) return;
+      item.archived = true;
+      touchItem(item);
+    } else {
+      if(!confirm(`Remove "${item.name}"?`)) return;
+      state.items = state.items.filter(i => i.id !== item.id);
     }
-
-    if(recent.length === 0){
-      section.style.display = 'none';
-      return;
-    }
-    section.style.display = 'block';
-    wrap.innerHTML = '';
-    recent.forEach(e => {
-      wrap.appendChild(makeChip(e.name, e.kcal));
-    });
+    saveState();
+    renderFavs(); renderActivities();
   }
 
   function escapeHtml(s){
@@ -1004,20 +1182,141 @@
     return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
-  // ---------- add / delete entries ----------
-  function addEntry(name, kcal, saveFav){
-    const now = new Date();
-    state.entries.push({
-      id: Date.now() + '_' + Math.random().toString(36).slice(2,7),
-      name, kcal: Number(kcal),
-      date: selectedDate,
-      ts: now.toISOString()
+  // ---------- modal helper ----------
+  function openModal(title, bodyHtml, onSave, saveLabel){
+    const old = document.getElementById('appModal');
+    if(old) old.remove();
+    const wrap = document.createElement('div');
+    wrap.id = 'appModal';
+    wrap.className = 'session-backdrop';
+    wrap.innerHTML =
+      `<div class="session-box" role="dialog" aria-modal="true">
+         <h2>${escapeHtml(title)}</h2>
+         <div class="modal-body">${bodyHtml}</div>
+         <div class="session-actions">
+           <button type="button" class="session-btn" id="modalSave">${escapeHtml(saveLabel || 'Save')}</button>
+           <button type="button" class="session-btn ghost" id="modalCancel">Cancel</button>
+         </div>
+       </div>`;
+    document.body.appendChild(wrap);
+    const close = () => wrap.remove();
+    document.getElementById('modalCancel').addEventListener('click', close);
+    wrap.addEventListener('click', (ev) => { if(ev.target === wrap) close(); });
+    document.getElementById('modalSave').addEventListener('click', () => {
+      if(onSave(wrap) !== false) close();
     });
-    if(saveFav){
-      state.favourites.push({ name, kcal: Number(kcal) });
-    }
+    const first = wrap.querySelector('input,select');
+    if(first) first.focus();
+    return wrap;
+  }
+
+  // ---------- item editing ----------
+  // Renaming an item relabels its history, because entries hold only a
+  // reference to the name. Changing the calories does NOT rewrite history --
+  // entries keep the rate frozen at the moment they were logged.
+  function openItemEditor(item, kindForNew){
+    const isNew = !item;
+    const kind = isNew ? (kindForNew || 'food') : item.kind;
+    const unit = isNew ? 'unit' : item.unit;
+    const shown = isNew ? '' : Math.round(perUnitToDisplay(Math.abs(item.kcalPerUnit), unit));
+    const verb = kind === 'activity' ? 'burned' : '';
+
+    const body = `
+      <label class="f-row"><span>Name</span>
+        <input type="text" id="miName" value="${isNew ? '' : escapeAttr(item.name)}" placeholder="${kind === 'activity' ? 'e.g. Jogging, 1 hr' : 'e.g. Apple'}"></label>
+      <label class="f-row"><span>Measured in</span>
+        <select id="miUnit">
+          <option value="unit"${unit === 'unit' ? ' selected' : ''}>each / portion</option>
+          <option value="g"${unit === 'g' ? ' selected' : ''}>grams</option>
+          <option value="ml"${unit === 'ml' ? ' selected' : ''}>millilitres</option>
+        </select></label>
+      <label class="f-row"><span>Calories ${verb}</span>
+        <input type="number" id="miKcal" value="${shown}" min="0" step="1"></label>
+      <div class="f-hint" id="miHint"></div>
+      ${isNew ? '' : `<label class="f-check"><input type="checkbox" id="miFav"${item.favourite ? ' checked' : ''}> show in the list</label>`}
+    `;
+
+    const wrap = openModal(isNew ? (kind === 'activity' ? 'New activity' : 'New food') : 'Edit item', body, (w) => {
+      const name = w.querySelector('#miName').value.trim();
+      const u = w.querySelector('#miUnit').value;
+      const shownVal = Number(w.querySelector('#miKcal').value);
+      if(!name || !(shownVal >= 0)) return false;
+      const mag = displayToPerUnit(shownVal, u);
+      const rate = kind === 'activity' ? -Math.abs(mag) : mag;
+
+      if(isNew){
+        state.items.push(makeItem({ name, kind, unit: u, kcalPerUnit: rate, favourite: true }));
+      } else {
+        item.name = name;
+        item.unit = u;
+        item.kcalPerUnit = rate;
+        const fav = w.querySelector('#miFav');
+        if(fav) item.favourite = fav.checked;
+        touchItem(item);
+      }
+      saveState();
+      renderAll();
+      renderFavs(); renderActivities();
+    }, isNew ? 'Add' : 'Save');
+
+    const hint = wrap.querySelector('#miHint');
+    const unitSel = wrap.querySelector('#miUnit');
+    const sync = () => {
+      const u = unitSel.value;
+      hint.textContent = u === 'unit'
+        ? 'Calories for one of them.'
+        : `Calories per 100${u} — the figure on the packet.`;
+    };
+    unitSel.addEventListener('change', sync);
+    sync();
+  }
+
+  function openQtyPrompt(item){
+    const u = item.unit;
+    const body = `
+      <label class="f-row"><span>How much (${escapeHtml(u)})</span>
+        <input type="number" id="qtyVal" value="100" min="0" step="1"></label>
+      <div class="f-hint" id="qtyHint"></div>
+    `;
+    const wrap = openModal(item.name, body, (w) => {
+      const qty = Number(w.querySelector('#qtyVal').value);
+      if(!(qty > 0)) return false;
+      logItem(item, qty);
+    }, 'Log it');
+
+    const input = wrap.querySelector('#qtyVal');
+    const hint = wrap.querySelector('#qtyHint');
+    const sync = () => {
+      const qty = Number(input.value) || 0;
+      hint.textContent = Math.round(qty * Math.abs(item.kcalPerUnit)) + ' kcal';
+    };
+    input.addEventListener('input', sync);
+    sync();
+  }
+
+  // ---------- logging ----------
+  function logItem(item, qty){
+    state.entries.push({
+      id: makeId(),
+      itemId: item.id,
+      qty: Number(qty) || 1,
+      kcalPerUnit: Number(item.kcalPerUnit),   // frozen at log time
+      date: selectedDate,
+      ts: nowIso(),
+      updatedAt: nowIso()
+    });
     saveState();
     renderAll();
+  }
+
+  // Ad-hoc logging still creates an item, so the thing can be grouped, renamed
+  // and ranked like anything else rather than being a second-class entry.
+  function addEntry(name, kcal, saveFav){
+    const n = Number(kcal);
+    const kind = n < 0 ? 'activity' : 'food';
+    const item = findOrCreateItem(name, n, kind, 'unit');
+    if(saveFav && !item.favourite){ item.favourite = true; touchItem(item); }
+    logItem(item, 1);
   }
 
   function deleteEntry(id){
@@ -1026,71 +1325,122 @@
     renderAll();
   }
 
-  function updateEntry(id, name, kcal){
+  // Editing quantity recomputes against the rate frozen on the entry, so
+  // correcting "6 rice cakes" to 4 never silently re-prices the day.
+  function updateEntryQty(id, qty){
     const e = state.entries.find(e => e.id === id);
     if(!e) return;
-    e.name = name;
-    e.kcal = Number(kcal);
+    e.qty = Number(qty) || 0;
+    e.updatedAt = nowIso();
     editingEntryId = null;
     saveState();
     renderAll();
   }
 
   let editingEntryId = null;
+  let expandedGroups = {};
 
   // ---------- render entry list for selectedDate ----------
+  function timeOf(e){
+    const t = new Date(e.ts);
+    return String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
+  }
+
+  // Six rice cakes is one line, not six. Grouping is by item, so it needs no
+  // string matching -- and ad-hoc entries with no item stay ungrouped.
+  function groupDayEntries(list){
+    const groups = [];
+    const byKey = new Map();
+    list.forEach(e => {
+      const key = e.itemId || ('adhoc:' + e.id);
+      let g = byKey.get(key);
+      if(!g){
+        g = { key, itemId: e.itemId, name: itemLabel(e), entries: [] };
+        byKey.set(key, g);
+        groups.push(g);
+      }
+      g.entries.push(e);
+    });
+    return groups;
+  }
+
+  function entryRow(e, opts){
+    const li = document.createElement('li');
+    if(editingEntryId === e.id){
+      li.className = 'editing';
+      li.innerHTML = `
+        <span class="name">${escapeHtml(itemLabel(e))}</span>
+        <input type="number" name="eqty" value="${e.qty}" min="0" step="any">
+        <button type="button" class="save">Save</button>
+        <button type="button" class="cancel">Cancel</button>
+      `;
+      li.querySelector('.save').addEventListener('click', () => {
+        const q = Number(li.querySelector('input[name="eqty"]').value);
+        if(!(q >= 0)) return;
+        updateEntryQty(e.id, q);
+      });
+      li.querySelector('.cancel').addEventListener('click', () => {
+        editingEntryId = null; renderToday();
+      });
+      return li;
+    }
+    const it = itemById(e.itemId);
+    const qtyLabel = (it && it.unit !== 'unit') ? `${e.qty}${it.unit}` : (e.qty > 1 ? `×${e.qty}` : '');
+    li.className = opts && opts.child ? 'child' : '';
+    li.innerHTML = `
+      <span class="time">${timeOf(e)}</span>
+      <span class="name">${escapeHtml(itemLabel(e))}${qtyLabel ? ` <span class="qty">${escapeHtml(qtyLabel)}</span>` : ''}</span>
+      <span class="kcal">${entryKcal(e)} kcal</span>
+      <button class="edit" title="edit quantity">edit</button>
+      <button class="del" title="delete">×</button>
+    `;
+    li.querySelector('.edit').addEventListener('click', () => { editingEntryId = e.id; renderToday(); });
+    li.querySelector('.del').addEventListener('click', () => deleteEntry(e.id));
+    return li;
+  }
+
   function renderToday(){
     renderDateNav();
     const list = document.getElementById('todayList');
     const dayEntries = entriesForDay(selectedDate).sort((a,b) => a.ts.localeCompare(b.ts));
     const isToday = selectedDate === todayKey();
     list.innerHTML = '';
+
     if(dayEntries.length === 0){
       list.innerHTML = `<li class="empty-note" style="border:none;">Nothing logged ${isToday ? 'yet today' : 'for this day'}.</li>`;
     } else {
-      dayEntries.forEach(e => {
-        const li = document.createElement('li');
-
-        if(editingEntryId === e.id){
-          li.className = 'editing';
-          li.innerHTML = `
-            <input type="text" name="ename" value="${escapeAttr(e.name)}">
-            <input type="number" name="ekcal" value="${e.kcal}" min="0">
-            <button type="button" class="save">Save</button>
-            <button type="button" class="cancel">Cancel</button>
-          `;
-          li.querySelector('.save').addEventListener('click', () => {
-            const newName = li.querySelector('input[name="ename"]').value.trim();
-            const newKcal = Number(li.querySelector('input[name="ekcal"]').value);
-            if(!newName || !(newKcal >= 0)) return;
-            updateEntry(e.id, newName, newKcal);
-          });
-          li.querySelector('.cancel').addEventListener('click', () => {
-            editingEntryId = null;
-            renderToday();
-          });
-        } else {
-          const t = new Date(e.ts);
-          const time = String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
-          li.innerHTML = `
-            <span class="time">${time}</span>
-            <span class="name">${escapeHtml(e.name)}</span>
-            <span class="kcal">${e.kcal} kcal</span>
-            <button class="edit" title="edit" data-id="${e.id}">edit</button>
-            <button class="del" title="delete" data-id="${e.id}">×</button>
-          `;
-          li.querySelector('.edit').addEventListener('click', () => {
-            editingEntryId = e.id;
-            renderToday();
-          });
-          li.querySelector('.del').addEventListener('click', () => deleteEntry(e.id));
+      groupDayEntries(dayEntries).forEach(g => {
+        if(g.entries.length === 1){
+          list.appendChild(entryRow(g.entries[0]));
+          return;
         }
+        const it = itemById(g.itemId);
+        const totalQty = g.entries.reduce((s, e) => s + Number(e.qty || 0), 0);
+        const totalKcal = g.entries.reduce((s, e) => s + entryKcal(e), 0);
+        const qtyLabel = (it && it.unit !== 'unit') ? `${totalQty}${it.unit}` : `×${totalQty}`;
+        const open = !!expandedGroups[g.key];
+
+        const li = document.createElement('li');
+        li.className = 'group' + (open ? ' open' : '');
+        li.innerHTML = `
+          <span class="time">${g.entries.length}×</span>
+          <span class="name">${escapeHtml(g.name)} <span class="qty">${escapeHtml(qtyLabel)}</span></span>
+          <span class="kcal">${totalKcal} kcal</span>
+          <button class="edit toggle">${open ? 'hide' : 'show'}</button>
+        `;
+        li.querySelector('.toggle').addEventListener('click', () => {
+          expandedGroups[g.key] = !open;
+          renderToday();
+        });
         list.appendChild(li);
+
+        if(open) g.entries.forEach(e => list.appendChild(entryRow(e, { child: true })));
       });
     }
-    document.getElementById('entryCount').textContent = dayEntries.length + (dayEntries.length===1 ? ' entry' : ' entries');
-    const total = totalFor(dayEntries);
-    document.getElementById('todayTotalLine').textContent = total + ' kcal';
+
+    const n = dayEntries.length;
+    document.getElementById('entryCount').textContent = n + (n === 1 ? ' entry' : ' entries');
+    document.getElementById('todayTotalLine').textContent = totalFor(dayEntries) + ' kcal';
 
     renderStamp();
   }
@@ -1107,8 +1457,9 @@
     const stampL = document.getElementById('stampL');
     const targetSub = document.getElementById('targetSub');
 
-    if(state.target){
-      const diff = state.target - total; // positive = under budget
+    const dayTarget = targetFor(selectedDate);
+    if(dayTarget){
+      const diff = dayTarget - total; // positive = under budget
       stamp.classList.remove('under','over','even');
       if(diff > 0){
         stamp.classList.add('under');
@@ -1123,7 +1474,8 @@
         stampN.textContent = '0';
         stampL.textContent = 'on target';
       }
-      targetSub.textContent = `Target: ${state.target} kcal / day`;
+      const overridden = Number(state.dayTargets[selectedDate]) > 0;
+      targetSub.textContent = `Target: ${dayTarget} kcal / day` + (overridden ? ' (this day)' : '');
     } else {
       stamp.classList.remove('under','over');
       stamp.classList.add('even');
@@ -1137,12 +1489,13 @@
   const targetSection = document.getElementById('targetSection');
   document.getElementById('editTargetBtn').addEventListener('click', () => {
     targetSection.style.display = targetSection.style.display === 'none' ? 'block' : 'none';
-    document.getElementById('targetInput').value = state.target || '';
-    document.getElementById('targetCur').textContent = state.target ? `current target: ${state.target} kcal` : '';
+    const cur = state.settings.defaultTarget;
+    document.getElementById('targetInput').value = cur || '';
+    document.getElementById('targetCur').textContent = cur ? `current target: ${cur} kcal` : '';
   });
   document.getElementById('saveTargetBtn').addEventListener('click', () => {
     const v = Number(document.getElementById('targetInput').value);
-    state.target = v > 0 ? v : null;
+    state.settings.defaultTarget = v > 0 ? v : null;
     saveState();
     renderAll();
     targetSection.style.display = 'none';
@@ -1286,13 +1639,19 @@
           <span class="kcal">${label}</span>
         `;
         item.addEventListener('click', () => {
-          const nameField = document.querySelector('#manualForm input[name="name"]');
-          const kcalField = document.querySelector('#manualForm input[name="kcal"]');
-          nameField.value = p.product_name + (brand ? ` (${brand})` : '') + (useServing ? '' : ' — 100g');
-          kcalField.value = kcalShown;
+          const name = p.product_name + (brand ? ` (${brand})` : '');
           searchResults.style.display = 'none';
           foodSearch.value = '';
-          kcalField.focus();
+          if(useServing){
+            // a per-serving figure is already "one of them"
+            logItem(findOrCreateItem(name, kcalShown, 'food', 'unit'), 1);
+          } else {
+            // a per-100g figure becomes a gram-measured item, so it asks how
+            // much rather than silently logging 100g
+            const it = findOrCreateItem(name, kcalShown / 100, 'food', 'g');
+            saveState();
+            openQtyPrompt(it);
+          }
         });
         searchResults.appendChild(item);
       });
@@ -1350,7 +1709,7 @@
         label = d.toLocaleDateString(undefined, {month:'long', year:'numeric'});
       }
       if(!groups[key]) groups[key] = { key, label, total:0, dayCount:new Set() };
-      groups[key].total += Number(e.kcal || 0);
+      groups[key].total += entryKcal(e);
       groups[key].dayCount.add(e.date);
     });
     return Object.values(groups).sort((a,b) => b.key.localeCompare(a.key));
@@ -1369,8 +1728,13 @@
     }
 
     groups.forEach(g => {
-      const days = currentRange === 'day' ? 1 : g.dayCount.size;
-      const periodTarget = state.target ? state.target * days : null;
+      // Sum each day's own target rather than multiplying one figure, so a
+      // per-day override is reflected in the period total.
+      let periodTarget = null;
+      g.dayCount.forEach(d => {
+        const t = targetFor(d);
+        if(t) periodTarget = (periodTarget || 0) + t;
+      });
       const diff = periodTarget !== null ? periodTarget - g.total : null;
       if(diff !== null) runningSum += diff;
 
@@ -1384,9 +1748,11 @@
       body.appendChild(tr);
     });
 
+    const anyTarget = Number(state.settings.defaultTarget) > 0 ||
+      Object.keys(state.dayTargets).some(k => Number(state.dayTargets[k]) > 0);
     const runLabel = document.getElementById('runningLabel');
     const runVal = document.getElementById('runningVal');
-    if(!state.target){
+    if(!anyTarget){
       runLabel.textContent = 'Running balance';
       runVal.textContent = 'set a target to see this';
       runVal.style.color = 'var(--muted)';
@@ -1400,7 +1766,9 @@
   function renderAll(){
     renderToday();
     renderHistory();
-    renderRecent();
+    // favourite order depends on recent usage, so it moves as you log
+    renderFavs();
+    renderActivities();
   }
 
   // ---------- cloud sync (Azure Static Web Apps auth + /api/state) ----------
@@ -1501,28 +1869,48 @@
       encodeURIComponent(location.pathname + location.search);
   }
 
-  // Entries are an append-mostly log, so they are unioned by id: a pull can never
-  // drop something this device logged but never managed to upload. The other
-  // fields have no per-item identity, so the most recently edited side wins.
+  // Two different rules, deliberately:
+  //   entries are append-mostly  -> union by id, so a pull can never drop
+  //                                 something this device logged but never
+  //                                 managed to upload;
+  //   items get *edited* (renaming is the whole point) -> union by id too, but
+  //                                 conflicts resolve on updatedAt, because
+  //                                 "both sides have one" is the normal case.
+  function mergeById(a, b){
+    const out = new Map();
+    a.concat(b).forEach(o => {
+      if(!o || !o.id) return;
+      const prev = out.get(o.id);
+      if(!prev || String(o.updatedAt || '') >= String(prev.updatedAt || '')) out.set(o.id, o);
+    });
+    return Array.from(out.values());
+  }
+
   function mergeStates(local, server){
     if(!server) return local;
     if(!local) return server;
-
-    const byId = new Map();
-    (server.entries || []).forEach(e => { if(e && e.id) byId.set(e.id, e); });
-    (local.entries  || []).forEach(e => { if(e && e.id) byId.set(e.id, e); });
-    const entries = Array.from(byId.values())
-      .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+    // Never blend across schema versions -- guess wrong and it corrupts both.
+    if(Number(server.schema) !== SCHEMA) return local;
 
     const localNewer = String(local._lastChange || '') > String(server._lastChange || '');
-    const win = localNewer ? local : server;
+    const older = localNewer ? server : local;
+    const newer = localNewer ? local : server;
+
+    const entries = mergeById(server.entries || [], local.entries || [])
+      .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+    const items = mergeById(server.items || [], local.items || []);
+
+    // Union the keys so targets set on different days both survive; only a
+    // genuine same-day conflict falls back to whichever side is newer.
+    const dayTargets = Object.assign({}, older.dayTargets || {}, newer.dayTargets || {});
 
     return {
+      schema: SCHEMA,
+      items,
       entries,
-      favourites: Array.isArray(win.favourites) ? win.favourites : DEFAULT_FAVS,
-      activities: Array.isArray(win.activities) ? win.activities : DEFAULT_ACTIVITIES,
-      target: win.target === undefined ? null : win.target,
-      _lastChange: localNewer ? local._lastChange : server._lastChange
+      dayTargets,
+      settings: Object.assign({ defaultTarget: null, favSort: 'frequency' }, newer.settings || {}),
+      _lastChange: newer._lastChange
     };
   }
 
@@ -1532,7 +1920,7 @@
       const res = await fetch('/api/state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: JSON.stringify(payload), profile })
+        body: JSON.stringify({ data: JSON.stringify(payload), profile, schema: SCHEMA })
       });
       if(res.status === 401 || res.status === 403){ onAuthLost(); return false; }
       if(!res.ok){ console.warn('Cloud sync rejected: HTTP', res.status); return false; }
@@ -1552,7 +1940,7 @@
     if(!cloudUser) return;
     let server = null;
     try{
-      const res = await fetch(`/api/state?profile=${encodeURIComponent(profile)}`);
+      const res = await fetch(`/api/state?profile=${encodeURIComponent(profile)}&schema=${SCHEMA}`);
       if(res.status === 401 || res.status === 403){ onAuthLost(); return; }
       if(!res.ok) return;
       clearReauthFlag();
@@ -1599,7 +1987,7 @@
     clearTimeout(syncTimer);
     try{
       const blob = new Blob(
-        [JSON.stringify({ data: JSON.stringify(state), profile: activeProfile })],
+        [JSON.stringify({ data: JSON.stringify(state), profile: activeProfile, schema: SCHEMA })],
         { type: 'application/json' }
       );
       navigator.sendBeacon('/api/state', blob);
