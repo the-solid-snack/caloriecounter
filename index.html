@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ledger — Calorie Log</title>
+<!-- Unconditional link first as the fallback, dark override second: browsers that
+     honour media on rel=icon take the later match, older ones keep the fallback.
+     (prefers-color-scheme inside a single SVG favicon is unreliable in Chrome.) -->
+<link rel="icon" type="image/svg+xml" href="/favicon-light.svg">
+<link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -74,6 +79,37 @@
   }
   .sync-line a{color:var(--ink);text-decoration:underline;}
   .sync-line a.signout{color:var(--muted);}
+  .sync-line .sync-pending{color:var(--muted);font-style:italic;}
+  .sync-line .sync-warn{color:var(--red);font-weight:600;}
+
+  /* ---- Session-expired dialog ---- */
+  .session-backdrop{
+    position:fixed;inset:0;z-index:100;
+    background:rgba(35,35,32,.55);
+    display:flex;align-items:center;justify-content:center;
+    padding:20px;
+  }
+  .session-box{
+    background:var(--paper);
+    border:2px solid var(--ink);
+    box-shadow:6px 6px 0 var(--ink);
+    max-width:420px;width:100%;padding:24px;
+  }
+  .session-box h2{
+    font-family:'Spectral',serif;
+    font-size:20px;margin:0 0 12px;
+  }
+  .session-box p{font-size:14px;line-height:1.5;margin:0 0 10px;}
+  .session-box .session-note{color:var(--muted);font-size:13px;}
+  .session-actions{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap;}
+  .session-btn{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+    padding:9px 14px;border:1px solid var(--ink);
+    background:var(--ink);color:var(--paper);
+    text-decoration:none;cursor:pointer;
+  }
+  .session-btn.ghost{background:transparent;color:var(--ink);}
   .profile-sync-row{
     display:flex;
     align-items:center;
@@ -702,6 +738,26 @@
     return profile === 'MA' ? STORE_KEY_BASE : `${STORE_KEY_BASE}:${profile}`;
   }
 
+  const PENDING_KEY_BASE = 'calorieLedger_pending';
+  const REAUTH_FLAG = 'calorieLedger_reauthAttempt';
+  const REAUTH_COOLDOWN_MS = 2 * 60 * 1000;
+  const AUTH_POLL_MS = 5 * 60 * 1000;
+
+  // "this device holds edits the server has not confirmed". Lives in localStorage
+  // so it survives the page reload that a re-auth redirect causes.
+  function pendingKeyFor(profile){
+    return profile === 'MA' ? PENDING_KEY_BASE : `${PENDING_KEY_BASE}:${profile}`;
+  }
+  function isPending(profile){
+    try{ return localStorage.getItem(pendingKeyFor(profile)) === '1'; }catch(e){ return false; }
+  }
+  function setPending(profile, on){
+    try{
+      if(on) localStorage.setItem(pendingKeyFor(profile), '1');
+      else localStorage.removeItem(pendingKeyFor(profile));
+    }catch(e){}
+  }
+
   const DEFAULT_FAVS = [
     { name: 'Lunch salad', kcal: 420 },
     { name: 'Slice of bread', kcal: 90 },
@@ -715,22 +771,35 @@
     { name: 'Cycling, 1 hr', kcal: -500 },
   ];
 
-  function loadState(){
+  function normalizeState(s){
+    if(!s || typeof s !== 'object') s = {};
+    if(!Array.isArray(s.favourites)) s.favourites = DEFAULT_FAVS;
+    if(!Array.isArray(s.activities)) s.activities = DEFAULT_ACTIVITIES;
+    if(!Array.isArray(s.entries)) s.entries = [];
+    return s;
+  }
+
+  function loadStateFor(profile){
     try{
-      const raw = localStorage.getItem(storeKeyFor(activeProfile));
-      if(raw) return JSON.parse(raw);
+      const raw = localStorage.getItem(storeKeyFor(profile));
+      if(raw) return normalizeState(JSON.parse(raw));
     }catch(e){}
     return { entries: [], favourites: DEFAULT_FAVS, activities: DEFAULT_ACTIVITIES, target: null };
   }
+  function loadState(){ return loadStateFor(activeProfile); }
+
   function saveState(){
+    // _lastChange lets a merge tell which side edited the non-entry fields
+    // (target, favourites, activities) most recently.
+    state._lastChange = new Date().toISOString();
     localStorage.setItem(storeKeyFor(activeProfile), JSON.stringify(state));
+    // Cleared only when the server confirms a 2xx, so an edit made while the
+    // session was dead is still known to be un-uploaded after a reload.
+    setPending(activeProfile, true);
     queueCloudSync();
   }
 
-  let state = loadState();
-  if(!Array.isArray(state.favourites)) state.favourites = DEFAULT_FAVS;
-  if(!Array.isArray(state.activities)) state.activities = DEFAULT_ACTIVITIES;
-  if(!Array.isArray(state.entries)) state.entries = [];
+  let state = normalizeState(loadState());
 
   // ---------- date helpers ----------
   function todayKey(d = new Date()){
@@ -1348,13 +1417,46 @@
     }
   }
 
+  function loginHref(){
+    return '/.auth/login/github?post_login_redirect_uri=' +
+      encodeURIComponent(location.pathname + location.search);
+  }
+
   function renderSyncStatus(){
     const el = document.getElementById('syncStatus');
+    if(!el) return;
     if(cloudUser){
-      el.innerHTML = `Synced as ${escapeHtml(cloudUser.userDetails)} · <a class="signout" href="/.auth/logout?post_logout_redirect_uri=/">sign out</a>`;
+      const waiting = isPending(activeProfile) ? ' · <span class="sync-pending">saving…</span>' : '';
+      el.innerHTML = `Synced as ${escapeHtml(cloudUser.userDetails)}${waiting} · ` +
+        `<a class="signout" href="/.auth/logout?post_logout_redirect_uri=/">sign out</a>`;
+    } else if(isPending(activeProfile)){
+      el.innerHTML = `<span class="sync-warn">Not synced — this device only</span> · ` +
+        `<a href="${loginHref()}">sign in to upload</a>`;
     } else {
-      el.innerHTML = `Not synced · <a href="/.auth/login/github?post_login_redirect_uri=/">sign in to sync across devices</a>`;
+      el.innerHTML = `Not synced · <a href="${loginHref()}">sign in to sync across devices</a>`;
     }
+  }
+
+  // Last resort: silent re-auth already failed, so the GitHub session is gone too
+  // and only the user can fix it. Blocking on purpose -- the whole point is that
+  // it can't be missed the way the old silent 401 was.
+  function showSessionDialog(){
+    if(document.getElementById('sessionDialog')) return;
+    const wrap = document.createElement('div');
+    wrap.id = 'sessionDialog';
+    wrap.className = 'session-backdrop';
+    wrap.innerHTML =
+      `<div class="session-box" role="alertdialog" aria-modal="true" aria-labelledby="sessionTitle">
+         <h2 id="sessionTitle">Sign-in expired</h2>
+         <p>Your session has ended, so entries are being saved to this device only.</p>
+         <p class="session-note">Nothing has been lost. Everything logged since then is stored here and uploads automatically as soon as you sign in again.</p>
+         <div class="session-actions">
+           <a class="session-btn" href="${loginHref()}">Sign in again</a>
+           <button type="button" class="session-btn ghost" id="sessionDismiss">Keep working offline</button>
+         </div>
+       </div>`;
+    document.body.appendChild(wrap);
+    document.getElementById('sessionDismiss').addEventListener('click', () => wrap.remove());
   }
 
   function renderProfileSwitch(){
@@ -1363,47 +1465,180 @@
     });
   }
 
-  async function fetchCloudState(profile){
+  // The SWA auth cookie lasts 8h, can't be refreshed, and /.auth/me exposes no
+  // expiry -- so we can't predict the drop. Instead we detect it two ways and
+  // recover: /api/* answering 401/403 (reactive), and /.auth/me going null
+  // (proactive, catches expiry before the next edit is even attempted).
+  function onAuthLost(){
+    if(!cloudUser) return;             // already known dead, don't re-enter
+    cloudUser = null;
+    renderSyncStatus();
+    attemptReauth();
+  }
+
+  function reauthAttemptedRecently(){
+    try{
+      return Date.now() - (Number(sessionStorage.getItem(REAUTH_FLAG)) || 0) < REAUTH_COOLDOWN_MS;
+    }catch(e){ return false; }
+  }
+  // Cleared only by a genuinely successful /api/* call. If auth "succeeds" but the
+  // API still rejects us (misconfig), the flag stays set and the cooldown prevents
+  // an endless redirect loop.
+  function clearReauthFlag(){
+    try{ sessionStorage.removeItem(REAUTH_FLAG); }catch(e){}
+  }
+
+  function attemptReauth(){
+    // The GitHub session long outlives the 8h SWA cookie, so this usually
+    // round-trips invisibly and returns with a fresh session. Local state is
+    // already in localStorage, so the navigation can't lose anything.
+    if(reauthAttemptedRecently()){
+      showSessionDialog();
+      return;
+    }
+    try{ sessionStorage.setItem(REAUTH_FLAG, String(Date.now())); }catch(e){}
+    location.href = '/.auth/login/github?post_login_redirect_uri=' +
+      encodeURIComponent(location.pathname + location.search);
+  }
+
+  // Entries are an append-mostly log, so they are unioned by id: a pull can never
+  // drop something this device logged but never managed to upload. The other
+  // fields have no per-item identity, so the most recently edited side wins.
+  function mergeStates(local, server){
+    if(!server) return local;
+    if(!local) return server;
+
+    const byId = new Map();
+    (server.entries || []).forEach(e => { if(e && e.id) byId.set(e.id, e); });
+    (local.entries  || []).forEach(e => { if(e && e.id) byId.set(e.id, e); });
+    const entries = Array.from(byId.values())
+      .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+
+    const localNewer = String(local._lastChange || '') > String(server._lastChange || '');
+    const win = localNewer ? local : server;
+
+    return {
+      entries,
+      favourites: Array.isArray(win.favourites) ? win.favourites : DEFAULT_FAVS,
+      activities: Array.isArray(win.activities) ? win.activities : DEFAULT_ACTIVITIES,
+      target: win.target === undefined ? null : win.target,
+      _lastChange: localNewer ? local._lastChange : server._lastChange
+    };
+  }
+
+  async function pushState(profile, payload){
+    if(!cloudUser) return false;
+    try{
+      const res = await fetch('/api/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: JSON.stringify(payload), profile })
+      });
+      if(res.status === 401 || res.status === 403){ onAuthLost(); return false; }
+      if(!res.ok){ console.warn('Cloud sync rejected: HTTP', res.status); return false; }
+      clearReauthFlag();
+      setPending(profile, false);
+      renderSyncStatus();
+      return true;
+    }catch(e){
+      console.error('Cloud sync failed:', e);
+      return false;
+    }
+  }
+
+  // Pull, merge, then push the merge back -- in that order. A plain pull would
+  // overwrite entries this device is still holding.
+  async function syncWithCloud(profile){
     if(!cloudUser) return;
+    let server = null;
     try{
       const res = await fetch(`/api/state?profile=${encodeURIComponent(profile)}`);
-      if(res.ok){
-        const body = await res.json();
-        if(body && body.data){
-          state = JSON.parse(body.data);
-          if(!Array.isArray(state.favourites)) state.favourites = DEFAULT_FAVS;
-          if(!Array.isArray(state.activities)) state.activities = DEFAULT_ACTIVITIES;
-          if(!Array.isArray(state.entries)) state.entries = [];
-          localStorage.setItem(storeKeyFor(profile), JSON.stringify(state));
-          renderFavs();
-          renderActivities();
-          renderAll();
-        }
-      }
+      if(res.status === 401 || res.status === 403){ onAuthLost(); return; }
+      if(!res.ok) return;
+      clearReauthFlag();
+      const body = await res.json();
+      if(body && body.data) server = normalizeState(JSON.parse(body.data));
     }catch(e){
       console.error('Cloud load failed:', e);
+      return;
+    }
+
+    const local  = profile === activeProfile ? normalizeState(state) : loadStateFor(profile);
+    const merged = normalizeState(mergeStates(local, server));
+
+    const serverIds = new Set((server && server.entries || []).map(e => e && e.id));
+    const serverMissingEntries = merged.entries.some(e => !serverIds.has(e.id));
+
+    if(profile === activeProfile){
+      state = merged;
+      renderFavs();
+      renderActivities();
+      renderAll();
+    }
+    try{ localStorage.setItem(storeKeyFor(profile), JSON.stringify(merged)); }catch(e){}
+
+    if(!server || serverMissingEntries || isPending(profile)){
+      await pushState(profile, merged);
+    } else {
+      setPending(profile, false);
+      renderSyncStatus();
     }
   }
 
   async function flushCloudSync(){
     clearTimeout(syncTimer);
     if(!cloudUser) return;
-    try{
-      await fetch('/api/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: JSON.stringify(state), profile: activeProfile })
-      });
-    }catch(e){
-      console.error('Cloud sync failed:', e);
-    }
+    await pushState(activeProfile, state);
   }
+
+  // fetch() gets cancelled if it's still in flight when the tab actually closes, so a pending
+  // debounced edit (queueCloudSync's 800ms timer) can be lost entirely on close/backgrounding.
+  // sendBeacon is delivered by the browser even as the page unloads.
+  function flushCloudSyncOnUnload(){
+    if(!cloudUser) return;
+    clearTimeout(syncTimer);
+    try{
+      const blob = new Blob(
+        [JSON.stringify({ data: JSON.stringify(state), profile: activeProfile })],
+        { type: 'application/json' }
+      );
+      navigator.sendBeacon('/api/state', blob);
+    }catch(e){}
+  }
+  ['beforeunload', 'pagehide'].forEach(ev => window.addEventListener(ev, flushCloudSyncOnUnload));
+  // Proactive half of the detection: /.auth/me is not under /api/*, so it never
+  // 401s -- a dead session just makes clientPrincipal null. Cheap to poll, and it
+  // notices the expiry before you type the next entry rather than after.
+  async function revalidateAuth(){
+    if(!cloudUser) return false;
+    if(!(await checkAuth())){ onAuthLost(); return false; }
+    return true;
+  }
+
+  document.addEventListener('visibilitychange', async () => {
+    if(document.visibilityState === 'hidden'){
+      flushCloudSyncOnUnload();
+    } else if(document.visibilityState === 'visible' && cloudUser){
+      // pick up edits made on another device while this tab sat in the background
+      if(await revalidateAuth()) await syncWithCloud(activeProfile);
+    }
+  });
+
+  setInterval(async () => {
+    if(document.visibilityState !== 'visible' || !cloudUser) return;
+    if(await revalidateAuth()) await syncWithCloud(activeProfile);
+  }, AUTH_POLL_MS);
 
   async function initCloudSync(){
     cloudUser = await checkAuth();
     renderSyncStatus();
-    if(!cloudUser) return;
-    await fetchCloudState(activeProfile);
+    if(!cloudUser){
+      // Back from a re-auth redirect and still logged out: the GitHub session is
+      // gone too, so silent recovery can't work. Only nag if work is at stake.
+      if(reauthAttemptedRecently() && isPending(activeProfile)) showSessionDialog();
+      return;
+    }
+    await syncWithCloud(activeProfile);
   }
 
   function queueCloudSync(){
@@ -1422,15 +1657,12 @@
     localStorage.setItem(PROFILE_KEY, activeProfile);
     renderProfileSwitch();
 
-    state = loadState();
-    if(!Array.isArray(state.favourites)) state.favourites = DEFAULT_FAVS;
-    if(!Array.isArray(state.activities)) state.activities = DEFAULT_ACTIVITIES;
-    if(!Array.isArray(state.entries)) state.entries = [];
+    state = normalizeState(loadState());
     renderFavs();
     renderActivities();
     renderAll();
 
-    if(cloudUser) await fetchCloudState(activeProfile);
+    if(cloudUser) await syncWithCloud(activeProfile);
   }
 
   document.getElementById('profileSwitch').addEventListener('click', (ev) => {
