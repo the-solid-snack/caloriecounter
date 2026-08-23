@@ -148,6 +148,17 @@
   .chip .ed{margin-left:6px;opacity:.45;cursor:pointer;font-size:11px;}
   .chip .ed:hover{opacity:1;}
 
+  /* momentary "logged" confirmation, so a tap needs no second guess */
+  .chip.just-logged,
+  .chip.just-logged:hover{
+    background:var(--green);
+    border-color:var(--green);
+    color:#fff;
+  }
+  .chip.just-logged .kcal,
+  .chip.just-logged .ed,
+  .chip.just-logged .rm{color:#fff;opacity:.9;}
+
   /* ---- grouped day rows ---- */
   #todayList li.group .name .qty,
   #todayList li .name .qty{
@@ -738,6 +749,25 @@
 
   <section>
     <div class="section-head">
+      <h2>Add entry</h2>
+      <span class="hint">your items, or search the web</span>
+    </div>
+    <div class="search-wrap">
+      <input type="text" id="foodSearch" placeholder="Search your items, or Open Food Facts…" autocomplete="off">
+      <div class="search-results" id="searchResults"></div>
+    </div>
+    <form class="manual-form" id="manualForm">
+      <input type="text" name="name" placeholder="What did you eat?" required>
+      <input type="number" name="kcal" placeholder="kcal" required min="0">
+      <label class="save-fav-check">
+        <input type="checkbox" name="saveFav"> save as favourite
+      </label>
+      <button type="submit">Log it</button>
+    </form>
+  </section>
+
+  <section>
+    <div class="section-head">
       <h2>Favourites</h2>
       <span class="hint">tap to log now</span>
       <button type="button" class="sort-btn" id="favSortBtn"></button>
@@ -755,25 +785,6 @@
     </div>
     <div class="chips" id="activityChips"></div>
     <button type="button" class="add-fav-btn" id="addActivityBtn" style="margin-top:10px;">+ new activity</button>
-  </section>
-
-  <section>
-    <div class="section-head">
-      <h2>Add entry</h2>
-      <span class="hint">search or type your own</span>
-    </div>
-    <div class="search-wrap">
-      <input type="text" id="foodSearch" placeholder="Search a food, e.g. kitkat chunky caramel" autocomplete="off">
-      <div class="search-results" id="searchResults"></div>
-    </div>
-    <form class="manual-form" id="manualForm">
-      <input type="text" name="name" placeholder="What did you eat?" required>
-      <input type="number" name="kcal" placeholder="kcal" required min="0">
-      <label class="save-fav-check">
-        <input type="checkbox" name="saveFav"> save as favourite
-      </label>
-      <button type="submit">Log it</button>
-    </form>
   </section>
 
   </div>
@@ -1060,14 +1071,42 @@
 
   const FAV_WINDOW_DAYS = 7;
 
+  // Logging something changes how often it has been used, which changes where
+  // its chip sorts -- so the chip could move out from under a second tap and
+  // you would log the wrong thing. After a tap we hold the order you are
+  // looking at for a few seconds, then settle to the true order.
+  const ORDER_FREEZE_MS = 5000;
+  let favOrderCache = {};          // kind -> [itemId, ...] as last displayed
+  let favOrderFrozenUntil = 0;
+  let favUnfreezeTimer = null;
+
   function favouriteItems(kind){
     const list = state.items.filter(i => i.favourite && !i.archived && i.kind === kind);
     if(state.settings.favSort === 'alpha'){
       return list.sort((a, b) => a.name.localeCompare(b.name));
     }
+    if(Date.now() < favOrderFrozenUntil && favOrderCache[kind]){
+      const idx = favOrderCache[kind];
+      return list.sort((a, b) => {
+        const ia = idx.indexOf(a.id), ib = idx.indexOf(b.id);
+        // anything new since the freeze falls to the end rather than jumping in
+        return (ia < 0 ? 1e6 : ia) - (ib < 0 ? 1e6 : ib) || a.name.localeCompare(b.name);
+      });
+    }
     const counts = usageCounts(FAV_WINDOW_DAYS);
-    return list.sort((a, b) =>
+    const sorted = list.sort((a, b) =>
       (counts[b.id] || 0) - (counts[a.id] || 0) || a.name.localeCompare(b.name));
+    favOrderCache[kind] = sorted.map(i => i.id);
+    return sorted;
+  }
+
+  function holdFavOrder(){
+    if(state.settings.favSort === 'alpha') return;   // alpha never reshuffles
+    favOrderFrozenUntil = Date.now() + ORDER_FREEZE_MS;
+    clearTimeout(favUnfreezeTimer);
+    favUnfreezeTimer = setTimeout(() => {
+      renderFavs(); renderActivities();
+    }, ORDER_FREEZE_MS + 60);
   }
 
   function targetFor(dateKey){
@@ -1142,7 +1181,8 @@
 
   function makeItemChip(item){
     const chip = document.createElement('div');
-    chip.className = 'chip' + (item.kind === 'activity' ? ' chip-activity' : '');
+    chip.className = 'chip' + (item.kind === 'activity' ? ' chip-activity' : '') +
+      (item.id === flashItemId ? ' just-logged' : '');
     const n = Math.round(perUnitToDisplay(Math.abs(item.kcalPerUnit), item.unit));
     const sign = item.kind === 'activity' ? '-' : '+';
     chip.innerHTML =
@@ -1367,7 +1407,21 @@
   }
 
   // ---------- logging ----------
+  let flashItemId = null;
+  let flashTimer = null;
+
   function logItem(item, qty){
+    // Pin the current chip order before the usage counts change under it, and
+    // flash the chip green so a tap is visibly acknowledged -- between them
+    // there is no reason to tap twice.
+    holdFavOrder();
+    flashItemId = item.id;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      flashItemId = null;
+      renderFavs(); renderActivities();
+    }, 900);
+
     state.entries.push({
       id: makeId(),
       itemId: item.id,
