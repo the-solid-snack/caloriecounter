@@ -492,6 +492,10 @@
     color:var(--muted);
     margin-top:2px;
   }
+  .search-results .fuzzy-tag{
+    font-family:'IBM Plex Mono',monospace;
+    color:var(--faint);font-size:11px;
+  }
   .search-results .item .kcal{
     font-family:'IBM Plex Mono',monospace;
     font-weight:600;
@@ -2323,10 +2327,13 @@
 
     const row = document.createElement('div');
     row.className = 'item';
+    // A phonetic rescue is labelled: it matched how the word sounds, not what
+    // you typed, so it deserves a second look before logging.
+    const note = [r.fuzzy ? 'closest spelling' : '', r.brand, macroNote].filter(Boolean).join(' · ');
     row.innerHTML = `
       <span>
-        <span class="fname">${escapeHtml(r.name)}</span>
-        <span class="brand">${escapeHtml([r.brand, macroNote].filter(Boolean).join(' · '))}</span>
+        <span class="fname">${escapeHtml(r.name)}${r.fuzzy ? ' <span class="fuzzy-tag">~</span>' : ''}</span>
+        <span class="brand">${escapeHtml(note)}</span>
       </span>
       <span class="kcal">${escapeHtml(label)}</span>
     `;

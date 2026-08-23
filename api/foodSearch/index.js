@@ -105,6 +105,72 @@ function normaliseTerm(s){
     .trim();
 }
 
+// Phonetic key, for spelling variants of the same word. This is the right
+// tool for "hummus" vs CoFID's "Houmous": trigram similarity -- the usual
+// fuzzy default -- shares *zero* trigrams between those two, because the
+// inserted vowel breaks every one. Soundex collapses both to H520, as it does
+// yoghurt/yogurt and doughnut/donut.
+function soundex(w){
+  const s = String(w).toUpperCase().replace(/[^A-Z]/g, '');
+  if(!s) return '';
+  const code = c =>
+    'BFPV'.indexOf(c) >= 0 ? '1' :
+    'CGJKQSXZ'.indexOf(c) >= 0 ? '2' :
+    'DT'.indexOf(c) >= 0 ? '3' :
+    c === 'L' ? '4' :
+    'MN'.indexOf(c) >= 0 ? '5' :
+    c === 'R' ? '6' : '';
+  let out = s[0], prev = code(s[0]);
+  for(let i = 1; i < s.length && out.length < 4; i++){
+    const c = code(s[i]);
+    if(c && c !== prev) out += c;
+    if('HW'.indexOf(s[i]) < 0) prev = c;
+  }
+  return (out + '000').slice(0, 4);
+}
+
+// Soundex alone is loose enough to pair genuinely unrelated words, so an edit
+// distance ceiling keeps it honest.
+function editDistance(a, b, cap){
+  if(Math.abs(a.length - b.length) > cap) return cap + 1;
+  let prev = new Array(b.length + 1);
+  for(let j = 0; j <= b.length; j++) prev[j] = j;
+  for(let i = 1; i <= a.length; i++){
+    const cur = [i];
+    let best = i;
+    for(let j = 1; j <= b.length; j++){
+      cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+      if(cur[j] < best) best = cur[j];
+    }
+    if(best > cap) return cap + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+function phoneticMatches(needle, foods){
+  const tokens = needle.split(' ').filter(t => t.length >= 4);
+  if(!tokens.length) return [];
+  const keys = tokens.map(soundex);
+
+  const hits = [];
+  for(const f of foods){
+    const words = normaliseTerm(String(f.n || '')).split(' ').filter(w => w.length >= 4);
+    let matched = 0, closest = 99;
+    for(let t = 0; t < tokens.length; t++){
+      for(const w of words){
+        if(soundex(w) !== keys[t]) continue;
+        const d = editDistance(tokens[t], w, 3);
+        if(d <= 3){ matched++; closest = Math.min(closest, d); break; }
+      }
+    }
+    // every meaningful word in the query has to find a phonetic partner
+    if(matched === tokens.length) hits.push({ f, closest });
+  }
+  hits.sort((a, b) => a.closest - b.closest);
+  return hits.slice(0, 5).map(h => h.f);
+}
+
 function searchCofid(q, context){
   const db = loadCofid(context);
   if(!db || !Array.isArray(db.foods)) return [];
@@ -137,17 +203,34 @@ function searchCofid(q, context){
   }
 
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, 8).map(({ f }) => normalised({
-    source: 'cofid',
-    group: 'basic',
-    name: f.n,
-    brand: '',
-    unit: 'g',
-    kcalPerUnit: f.k,
-    protein: f.p == null ? null : f.p,
-    carbs:   f.c == null ? null : f.c,
-    fat:     f.f == null ? null : f.f
-  }));
+
+  const toRow = (f, fuzzy) => {
+    const row = normalised({
+      source: 'cofid',
+      group: 'basic',
+      name: f.n,
+      brand: '',
+      unit: 'g',
+      kcalPerUnit: f.k,
+      protein: f.p == null ? null : f.p,
+      carbs:   f.c == null ? null : f.c,
+      fat:     f.f == null ? null : f.f
+    });
+    if(fuzzy) row.fuzzy = true;
+    return row;
+  };
+
+  const rows = scored.slice(0, 8).map(({ f }) => toRow(f, false));
+
+  // Only when literal matching came up short -- a spelling rescue must never
+  // push its way in front of a result the user actually typed.
+  if(rows.length < 3){
+    const seen = new Set(rows.map(r => r.name));
+    phoneticMatches(needle, db.foods).forEach(f => {
+      if(!seen.has(f.n) && rows.length < 8) rows.push(toRow(f, true));
+    });
+  }
+  return rows;
 }
 
 // ---- USDA FoodData Central: generic and raw foods, always per 100g ----
