@@ -2392,11 +2392,20 @@
             '<div class="status">No matches — add it manually below.</div>');
         }
         if(basic.length || branded.length){
-          const src = [basic.length ? 'USDA FoodData Central' : null,
-                       branded.length ? 'Open Food Facts' : null].filter(Boolean).join(' · ');
+          // name only the sources that actually contributed to this result set
+          const NAMES = {
+            cofid: 'McCance & Widdowson’s CoFID (OGL v3.0)',
+            usda: 'USDA FoodData Central',
+            off: 'Open Food Facts'
+          };
+          const used = [];
+          basic.concat(branded).forEach(r => {
+            const n = NAMES[r.source];
+            if(n && used.indexOf(n) < 0) used.push(n);
+          });
           const attr = document.createElement('div');
           attr.className = 'attribution';
-          attr.textContent = 'Data: ' + src;
+          attr.textContent = 'Data: ' + used.join(' · ');
           searchResults.appendChild(attr);
         }
         const errs = data.errors || {};

@@ -75,6 +75,62 @@ function normalised(o){
   return out;
 }
 
+// ---- CoFID: the UK national table, bundled rather than queried ----
+// It is published as a spreadsheet under the Open Government Licence with no
+// API, which suits it: a national reference table is revised every few years,
+// so converting it once and searching it in-process beats a network call on
+// every keystroke. tools/convert-cofid.ps1 produces the file; when it is
+// absent everything below simply falls through to USDA.
+const path = require('path');
+let cofidCache;
+
+function loadCofid(context){
+  if(cofidCache !== undefined) return cofidCache;
+  try{
+    cofidCache = require(path.join(__dirname, '..', 'data', 'cofid.json'));
+    if(context) context.log('CoFID loaded: ' + (cofidCache.foods || []).length + ' foods');
+  }catch(e){
+    cofidCache = null;   // not shipped -- fine, USDA covers basic foods
+  }
+  return cofidCache;
+}
+
+function searchCofid(q, context){
+  const db = loadCofid(context);
+  if(!db || !Array.isArray(db.foods)) return [];
+
+  const needle = q.toLowerCase().trim();
+  const tokens = needle.split(/\s+/).filter(Boolean);
+
+  const scored = [];
+  for(const f of db.foods){
+    const name = String(f.n || '');
+    const low = name.toLowerCase();
+    let score = 0;
+    if(low === needle) score = 100;
+    else if(low.startsWith(needle)) score = 80;
+    else if(low.includes(needle)) score = 60;
+    else if(tokens.length > 1 && tokens.every(t => low.includes(t))) score = 40;
+    else continue;
+    // shorter names are usually the plainer, more useful entry
+    score -= Math.min(15, name.length / 12);
+    scored.push({ score, f });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, 8).map(({ f }) => normalised({
+    source: 'cofid',
+    group: 'basic',
+    name: f.n,
+    brand: '',
+    unit: 'g',
+    kcalPerUnit: f.k,
+    protein: f.p == null ? null : f.p,
+    carbs:   f.c == null ? null : f.c,
+    fat:     f.f == null ? null : f.f
+  }));
+}
+
 // ---- USDA FoodData Central: generic and raw foods, always per 100g ----
 async function searchUsda(q){
   const url = 'https://api.nal.usda.gov/fdc/v1/foods/search' +
@@ -161,14 +217,25 @@ module.exports = async function (context, req) {
     return;
   }
 
+  // CoFID is local, so it costs nothing and never fails.
+  const cofid = searchCofid(q, context);
+
   // Settled, not all: a provider being down or throttled must not take the
   // other one with it. Each reports its own state so the page can say which.
   const [usda, off] = await Promise.allSettled([searchUsda(q), searchOff(q)]);
+  const usdaRows = usda.status === 'fulfilled' ? usda.value : [];
+
+  // UK table first when it has an answer -- composite and prepared dishes
+  // ("shepherd's pie", "bacon sandwich") reflect British recipes and
+  // fortification, which is exactly where USDA diverges. USDA still fills in
+  // behind it, deduped on name so the same food is not offered twice.
+  const seen = new Set(cofid.map(r => r.name.toLowerCase()));
+  const basic = cofid.concat(usdaRows.filter(r => !seen.has(r.name.toLowerCase()))).slice(0, 10);
 
   const body = {
     query: q,
-    basic:   usda.status === 'fulfilled' ? usda.value : [],
-    branded: off.status  === 'fulfilled' ? off.value  : [],
+    basic,
+    branded: off.status === 'fulfilled' ? off.value : [],
     errors: {}
   };
   if(usda.status === 'rejected'){
