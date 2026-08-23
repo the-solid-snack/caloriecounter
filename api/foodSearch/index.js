@@ -95,25 +95,44 @@ function loadCofid(context){
   return cofidCache;
 }
 
+// Punctuation is stripped on both sides so "shepherds pie" finds CoFID's
+// "Pie, Cottage/Shepherd's, reheated". Without this an apostrophe in the
+// source silently makes an entry unreachable.
+function normaliseTerm(s){
+  return String(s).toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
 function searchCofid(q, context){
   const db = loadCofid(context);
   if(!db || !Array.isArray(db.foods)) return [];
 
-  const needle = q.toLowerCase().trim();
-  const tokens = needle.split(/\s+/).filter(Boolean);
+  const needle = normaliseTerm(q);
+  if(!needle) return [];
+  const tokens = needle.split(' ').filter(Boolean);
 
   const scored = [];
   for(const f of db.foods){
     const name = String(f.n || '');
-    const low = name.toLowerCase();
+    const low = normaliseTerm(name);
+    // CoFID names read "Head, qualifier, qualifier" -- "Apples, eating, raw".
+    // Matching the head is what distinguishes the plain food from a dish made
+    // out of it, so "apple" should find the apple, not the apple sauce.
+    const head = normaliseTerm(name.split(',')[0]);
+
     let score = 0;
-    if(low === needle) score = 100;
-    else if(low.startsWith(needle)) score = 80;
+    if(head === needle || head === needle + 's' || head + 's' === needle) score = 100;
+    else if(low === needle) score = 95;
+    else if(head.startsWith(needle)) score = 82;
+    else if(low.startsWith(needle)) score = 76;
     else if(low.includes(needle)) score = 60;
     else if(tokens.length > 1 && tokens.every(t => low.includes(t))) score = 40;
     else continue;
-    // shorter names are usually the plainer, more useful entry
-    score -= Math.min(15, name.length / 12);
+
+    // gentle nudge toward the plainer entry, never enough to beat a head match
+    score -= Math.min(10, name.length / 16);
     scored.push({ score, f });
   }
 
