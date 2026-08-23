@@ -2,7 +2,6 @@
   "name": "caloriecounter-api",
   "version": "1.0.0",
   "private": true,
-  "main": "state/index.js",
   "dependencies": {
     "@azure/data-tables": "^13.2.2"
   }

@@ -143,6 +143,7 @@
   }
   .f-hint{font-size:12px;color:var(--muted);}
   .f-check{display:flex;align-items:center;gap:7px;font-size:13px;}
+  .f-macros{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;}
 
   /* ---- catalogue chip: edit affordance ---- */
   .chip .ed{margin-left:6px;opacity:.45;cursor:pointer;font-size:11px;}
@@ -236,9 +237,62 @@
   .stamp.under{color:var(--green);}
   .stamp.over{color:var(--red);}
   .stamp.even{color:var(--muted);}
+  /* ---- Hero charts ---- */
+  .hero-charts{
+    flex:1 1 420px;
+    min-width:0;
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+  }
+  .hc-range{display:flex;gap:3px;justify-content:flex-end;}
+  .hc-range button{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10.5px;letter-spacing:.04em;
+    padding:3px 8px;cursor:pointer;
+    background:none;border:1px solid var(--rule);
+    color:var(--muted);border-radius:2px;
+  }
+  .hc-range button.active{background:var(--ink);border-color:var(--ink);color:var(--paper);}
+  .hc-range button:hover:not(.active){border-color:var(--ink);color:var(--ink);}
+  .hc-row{display:flex;gap:22px;}
+  .hc{flex:1 1 0;min-width:0;margin:0;}
+  .hc svg{width:100%;height:88px;display:block;}
+  .hc figcaption{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10px;color:var(--muted);
+    letter-spacing:.03em;margin-top:2px;
+  }
+  @media (max-width:760px){
+    .stamp-row{flex-wrap:wrap;}
+    .hero-charts{flex-basis:100%;}
+    .hc-row{flex-direction:column;gap:14px;}
+  }
+
   .stamp-meta{font-size:15px;line-height:1.5;}
   .stamp-meta .big{font-family:'Spectral',serif;font-size:32px;font-weight:600;line-height:1.15;}
-  .stamp-meta .sub{color:var(--muted);font-size:14px;margin-top:2px;}
+  .stamp-meta .sub{color:var(--muted);font-size:14px;margin-top:2px;display:flex;align-items:center;gap:7px;}
+  .icon-btn{
+    background:none;border:1px solid var(--rule);border-radius:2px;
+    color:var(--muted);cursor:pointer;
+    font-size:12px;line-height:1;padding:3px 6px;
+  }
+  .icon-btn:hover{color:var(--ink);border-color:var(--ink);}
+
+  /* ---- Macro line ---- */
+  .macro-line{
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    margin-top:7px;min-height:18px;
+    font-family:'IBM Plex Mono',monospace;font-size:12px;
+  }
+  .macro-line .macro{color:var(--ink);}
+  .macro-line .macro b{color:var(--muted);font-weight:500;margin-right:2px;}
+  .macro-line .macro.partial{color:var(--muted);}
+  .macro-line .macro-warn{
+    color:var(--red);
+    border-bottom:1px dotted var(--red);
+    cursor:help;
+  }
   .target-adjust{margin-top:8px;}
   .target-adjust #editTargetBtn{
     background:none;border:none;
@@ -728,9 +782,29 @@
     </div>
     <div class="stamp-meta">
       <div class="big" id="todayTotalBig">0 kcal</div>
-      <div class="sub" id="targetSub">No daily target set.</div>
-      <div class="target-adjust" id="targetAdjust">
-        <button id="editTargetBtn" type="button">set / edit target</button>
+      <div class="sub">
+        <span id="targetSub">No daily target set.</span>
+        <button id="editTargetBtn" type="button" class="icon-btn"
+                title="Set or edit target" aria-label="Set or edit daily target">✎</button>
+      </div>
+      <div class="macro-line" id="macroLine"></div>
+    </div>
+
+    <div class="hero-charts" id="heroCharts">
+      <div class="hc-range" id="chartRange">
+        <button type="button" data-range="day">30d</button>
+        <button type="button" data-range="week">12w</button>
+        <button type="button" data-range="month">12m</button>
+      </div>
+      <div class="hc-row">
+        <figure class="hc">
+          <svg id="chartBalance" viewBox="0 0 340 88" preserveAspectRatio="none" role="img" aria-label="Cumulative calorie balance over time"></svg>
+          <figcaption id="capBalance"></figcaption>
+        </figure>
+        <figure class="hc">
+          <svg id="chartDaily" viewBox="0 0 340 88" preserveAspectRatio="none" role="img" aria-label="Totals against target for each period"></svg>
+          <figcaption id="capDaily"></figcaption>
+        </figure>
       </div>
     </div>
   </div>
@@ -905,8 +979,28 @@
     return (item.kind === 'activity' ? '-' : '') + n + unitSuffix(item.unit);
   }
 
+  // Macros follow calories exactly: stored per one base unit, and absent
+  // rather than zero when unknown. A missing figure must never be counted as
+  // "0 g of protein" -- that flatters the total in the same way an unlogged
+  // day flatters the calorie chart.
+  const MACROS = [
+    { k:'p', label:'protein' },
+    { k:'c', label:'carbs' },
+    { k:'f', label:'fat' }
+  ];
+
+  function cleanNutrients(n){
+    if(!n || typeof n !== 'object') return null;
+    const out = {};
+    MACROS.forEach(m => {
+      const v = Number(n[m.k]);
+      if(Number.isFinite(v) && v >= 0) out[m.k] = v;
+    });
+    return Object.keys(out).length ? out : null;
+  }
+
   function makeItem(o){
-    return {
+    const it = {
       id: o.id || makeId(),
       name: String(o.name || '').trim(),
       kind: o.kind === 'activity' ? 'activity' : 'food',
@@ -916,6 +1010,9 @@
       archived: !!o.archived,
       updatedAt: o.updatedAt || nowIso()
     };
+    const n = cleanNutrients(o.nutrients);
+    if(n) it.nutrients = n;
+    return it;
   }
 
   function emptyState(){
@@ -936,6 +1033,10 @@
     if(!s.settings || typeof s.settings !== 'object') s.settings = {};
     if(s.settings.defaultTarget === undefined) s.settings.defaultTarget = null;
     if(s.settings.favSort !== 'alpha') s.settings.favSort = 'frequency';
+    if(['day','week','month'].indexOf(s.settings.chartRange) < 0) s.settings.chartRange = 'day';
+    // Placeholder so per-macro goals can be switched on later without another
+    // schema change: null means "not using macro targets".
+    if(s.settings.macroTargets === undefined) s.settings.macroTargets = null;
     s.schema = SCHEMA;
     return s;
   }
@@ -1345,6 +1446,16 @@
       <label class="f-row"><span>Calories ${verb}</span>
         <input type="number" id="miKcal" value="${shown}" min="0" step="1"></label>
       <div class="f-hint" id="miHint"></div>
+      ${kind === 'activity' ? '' : `
+      <div class="f-macros">
+        ${MACROS.map(m => {
+          const v = (!isNew && item.nutrients && item.nutrients[m.k] != null)
+            ? Math.round(perUnitToDisplay(item.nutrients[m.k], unit)) : '';
+          return `<label class="f-row"><span>${m.label} (g)</span>
+            <input type="number" id="mi_${m.k}" value="${v}" min="0" step="1" placeholder="—"></label>`;
+        }).join('')}
+      </div>
+      <div class="f-hint">Leave a macro blank if you don’t know it — blank counts as unknown, not zero.</div>`}
       ${isNew ? '' : `<label class="f-check"><input type="checkbox" id="miFav"${item.favourite ? ' checked' : ''}> show in the list</label>`}
     `;
 
@@ -1356,12 +1467,26 @@
       const mag = displayToPerUnit(shownVal, u);
       const rate = kind === 'activity' ? -Math.abs(mag) : mag;
 
+      // A blank macro box means unknown and must stay absent, not become 0.
+      const nutr = {};
+      MACROS.forEach(m => {
+        const box = w.querySelector('#mi_' + m.k);
+        if(!box) return;
+        const raw = box.value.trim();
+        if(raw === '') return;
+        const v = Number(raw);
+        if(Number.isFinite(v) && v >= 0) nutr[m.k] = displayToPerUnit(v, u);
+      });
+      const nutrients = Object.keys(nutr).length ? nutr : null;
+
       if(isNew){
-        state.items.push(makeItem({ name, kind, unit: u, kcalPerUnit: rate, favourite: true }));
+        state.items.push(makeItem({ name, kind, unit: u, kcalPerUnit: rate, favourite: true, nutrients }));
       } else {
         item.name = name;
         item.unit = u;
         item.kcalPerUnit = rate;
+        if(nutrients) item.nutrients = nutrients;
+        else delete item.nutrients;
         const fav = w.querySelector('#miFav');
         if(fav) item.favourite = fav.checked;
         touchItem(item);
@@ -1422,7 +1547,7 @@
       renderFavs(); renderActivities();
     }, 900);
 
-    state.entries.push({
+    const entry = {
       id: makeId(),
       itemId: item.id,
       qty: Number(qty) || 1,
@@ -1430,9 +1555,44 @@
       date: selectedDate,
       ts: nowIso(),
       updatedAt: nowIso()
-    });
+    };
+    // Frozen for the same reason as the calories: editing an item's macros
+    // later must not silently rewrite what you already ate.
+    const n = cleanNutrients(item.nutrients);
+    if(n) entry.nutrPerUnit = n;
+
+    state.entries.push(entry);
     saveState();
     renderAll();
+  }
+
+  // Totals that are honest about what they don't know. `covered` counts the
+  // food entries that carried a figure; `total` counts those that should have.
+  function macroTotals(list){
+    const out = { total: 0, covered: {}, grams: {} };
+    MACROS.forEach(m => { out.covered[m.k] = 0; out.grams[m.k] = 0; });
+    list.forEach(e => {
+      const it = itemById(e.itemId);
+      if(it && it.kind === 'activity') return;   // burns have no macros
+      out.total++;
+      const n = e.nutrPerUnit;
+      if(!n) return;
+      MACROS.forEach(m => {
+        if(n[m.k] == null) return;
+        out.covered[m.k]++;
+        out.grams[m.k] += Number(n[m.k]) * Number(e.qty || 0);
+      });
+    });
+    return out;
+  }
+
+  function entriesMissingMacros(list){
+    return list.filter(e => {
+      const it = itemById(e.itemId);
+      if(it && it.kind === 'activity') return false;
+      const n = e.nutrPerUnit;
+      return !n || MACROS.some(m => n[m.k] == null);
+    });
   }
 
   // Ad-hoc logging still creates an item, so the thing can be grouped, renamed
@@ -1609,7 +1769,231 @@
       stampL.textContent = 'no target';
       targetSub.textContent = 'No daily target set.';
     }
+
+    renderMacros();
   }
+
+  // A partial total is shown as "84g+" -- a floor, not a sum. Presenting it as
+  // a plain "84g" when a third of the day has no figures would be a quietly
+  // wrong number, and wrong in the flattering direction.
+  function renderMacros(){
+    const el = document.getElementById('macroLine');
+    if(!el) return;
+    const list = entriesForDay(selectedDate);
+    const t = macroTotals(list);
+    if(!t.total){ el.innerHTML = ''; return; }
+
+    const parts = MACROS.map(m => {
+      const partial = t.covered[m.k] < t.total;
+      const g = Math.round(t.grams[m.k]);
+      const val = t.covered[m.k] === 0 ? '—' : g + 'g' + (partial ? '+' : '');
+      return `<span class="macro${partial ? ' partial' : ''}">` +
+             `<b>${m.k.toUpperCase()}</b>${escapeHtml(val)}</span>`;
+    }).join('');
+
+    const missing = entriesMissingMacros(list).length;
+    const warn = missing
+      ? `<span class="macro-warn" title="${missing} of ${t.total} entries today have no macro figures, so these totals are a minimum, not a sum.">` +
+        `${missing} of ${t.total} missing macros</span>`
+      : '';
+
+    el.innerHTML = parts + warn;
+  }
+
+  // ---------- hero charts ----------
+  // 'YYYY-MM-DD' through new Date() parses as UTC and can land on the wrong
+  // day west of Greenwich, so build the local date explicitly.
+  function parseDayKey(k){
+    const p = String(k).split('-');
+    return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  }
+
+  function entriesByDate(){
+    const m = {};
+    state.entries.forEach(e => { (m[e.date] = m[e.date] || []).push(e); });
+    return m;
+  }
+
+  const CHART_SPAN = { day: 30, week: 12, month: 12 };
+
+  // A period you never logged is a GAP, not a zero. Treating it as zero would
+  // read as a huge win against target -- the chart would congratulate you for
+  // forgetting. Targets likewise only accrue for days that actually have
+  // entries, so a 3-day week isn't scored against 7 days of budget.
+  function chartBuckets(range){
+    const byDate = entriesByDate();
+    const now = new Date();
+    const out = [], index = new Map();
+
+    for(let i = CHART_SPAN[range] - 1; i >= 0; i--){
+      const d = new Date(now);
+      let key, label;
+      if(range === 'day'){
+        d.setDate(d.getDate() - i);
+        key = todayKey(d);
+        label = d.toLocaleDateString(undefined, { day:'numeric', month:'short' });
+      } else if(range === 'week'){
+        d.setDate(d.getDate() - i * 7);
+        key = todayKey(startOfWeek(d));
+        label = startOfWeek(d).toLocaleDateString(undefined, { day:'numeric', month:'short' });
+      } else {
+        d.setMonth(d.getMonth() - i, 1);
+        key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+        label = d.toLocaleDateString(undefined, { month:'short' });
+      }
+      if(index.has(key)) continue;
+      const b = { key, label, total:0, target:0, has:false };
+      index.set(key, b);
+      out.push(b);
+    }
+
+    Object.keys(byDate).forEach(date => {
+      const d = parseDayKey(date);
+      const key = range === 'day'   ? date
+                : range === 'week'  ? todayKey(startOfWeek(d))
+                : date.slice(0, 7);
+      const b = index.get(key);
+      if(!b) return;
+      b.total += totalFor(byDate[date]);
+      b.target += (targetFor(date) || 0);
+      b.has = true;
+    });
+
+    return out;
+  }
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  function svgEl(tag, attrs){
+    const e = document.createElementNS(SVG_NS, tag);
+    for(const k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+  function clearSvg(svg){ while(svg.firstChild) svg.removeChild(svg.firstChild); }
+
+  const C_GREEN = '#33604A', C_RED = '#993524', C_INK = '#1E1E1B', C_RULE = '#C4BCA6';
+
+  // B -- cumulative balance. Area above zero is a deficit (green), below is a
+  // surplus (red); two clip rects colour it correctly even when it crosses.
+  function renderBalanceChart(buckets){
+    const svg = document.getElementById('chartBalance');
+    const cap = document.getElementById('capBalance');
+    clearSvg(svg);
+
+    const scored = buckets.filter(b => b.has && b.target > 0);
+    if(scored.length < 2){
+      cap.textContent = 'cumulative balance — needs a target';
+      svg.appendChild(svgEl('line', { x1:0, y1:44, x2:340, y2:44, stroke:C_RULE, 'stroke-width':1 }));
+      return;
+    }
+
+    let run = 0;
+    const series = [];
+    buckets.forEach(b => {
+      if(b.has && b.target > 0) run += (b.target - b.total);
+      series.push(run);
+    });
+
+    const peak = Math.max(1, ...series.map(v => Math.abs(v)));
+    const zero = 44, amp = 34;
+    const xAt = i => buckets.length < 2 ? 170 : (6 + i * (328 / (buckets.length - 1)));
+    const yAt = v => zero - (v / peak) * amp;
+    const pts = series.map((v, i) => [xAt(i), yAt(v)]);
+
+    const line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+    const area = line + ` L${pts[pts.length-1][0].toFixed(1)} ${zero} L${pts[0][0].toFixed(1)} ${zero} Z`;
+
+    const defs = svgEl('defs', {});
+    const cUp = svgEl('clipPath', { id:'clipUp' });
+    cUp.appendChild(svgEl('rect', { x:0, y:0, width:340, height:zero }));
+    const cDn = svgEl('clipPath', { id:'clipDn' });
+    cDn.appendChild(svgEl('rect', { x:0, y:zero, width:340, height:88 - zero }));
+    defs.appendChild(cUp); defs.appendChild(cDn);
+    svg.appendChild(defs);
+
+    svg.appendChild(svgEl('path', { d:area, fill:C_GREEN, opacity:0.16, 'clip-path':'url(#clipUp)' }));
+    svg.appendChild(svgEl('path', { d:area, fill:C_RED,   opacity:0.16, 'clip-path':'url(#clipDn)' }));
+    svg.appendChild(svgEl('line', { x1:0, y1:zero, x2:340, y2:zero, stroke:C_RULE, 'stroke-width':1 }));
+    svg.appendChild(svgEl('path', { d:line, fill:'none', stroke:C_INK, 'stroke-width':1.6,
+      'stroke-linejoin':'round', 'stroke-linecap':'round', 'vector-effect':'non-scaling-stroke' }));
+
+    const last = pts[pts.length - 1], end = series[series.length - 1];
+    svg.appendChild(svgEl('circle', { cx:last[0], cy:last[1], r:3.4,
+      fill: end >= 0 ? C_GREEN : C_RED, stroke:'#FBF9F4', 'stroke-width':1.6 }));
+
+    cap.textContent = (end >= 0 ? 'deficit ' : 'surplus ') +
+      Math.abs(Math.round(end)).toLocaleString() + ' kcal cumulative';
+  }
+
+  // C -- each period's total against its own target. The target differs per
+  // bar once you group by week or month, so it is drawn as a tick per bar
+  // rather than one flat rule across the chart.
+  function renderDailyChart(buckets){
+    const svg = document.getElementById('chartDaily');
+    const cap = document.getElementById('capDaily');
+    clearSvg(svg);
+
+    const any = buckets.some(b => b.has);
+    const base = 74, top = 8;
+    svg.appendChild(svgEl('line', { x1:0, y1:base, x2:340, y2:base, stroke:C_RULE, 'stroke-width':1 }));
+    if(!any){ cap.textContent = 'nothing logged yet'; return; }
+
+    const peak = Math.max(1, ...buckets.map(b => Math.max(b.total, b.target)));
+    const slot = 340 / buckets.length;
+    const bw = Math.max(3, Math.min(16, slot - 4));
+    const hAt = v => Math.max(0, (v / peak) * (base - top));
+
+    let over = 0, scored = 0;
+    buckets.forEach((b, i) => {
+      const cx = slot * i + slot / 2;
+      if(!b.has){
+        svg.appendChild(svgEl('rect', { x:cx - bw/2, y:base - 2, width:bw, height:2, fill:C_RULE }));
+        return;
+      }
+      const h = hAt(b.total);
+      const okay = !b.target || b.total <= b.target;
+      if(b.target){ scored++; if(!okay) over++; }
+
+      if(okay){
+        svg.appendChild(svgEl('rect', { x:cx - bw/2, y:base - h, width:bw, height:h,
+          rx:1.5, fill:C_GREEN }));
+      } else {
+        // Split the bar at the target so the red is the *excess*, not the whole
+        // day. Otherwise every bar is nearly full height and the one thing you
+        // want to see -- how far over -- is the part that varies least.
+        const th = hAt(b.target);
+        svg.appendChild(svgEl('rect', { x:cx - bw/2, y:base - th, width:bw, height:th,
+          rx:1.5, fill:C_GREEN }));
+        svg.appendChild(svgEl('rect', { x:cx - bw/2, y:base - h, width:bw, height:h - th,
+          rx:1.5, fill:C_RED }));
+      }
+      if(b.target){
+        const ty = base - hAt(b.target);
+        svg.appendChild(svgEl('line', { x1:cx - bw/2 - 1.5, y1:ty, x2:cx + bw/2 + 1.5, y2:ty,
+          stroke:C_INK, 'stroke-width':1.2, opacity:0.55, 'vector-effect':'non-scaling-stroke' }));
+      }
+    });
+
+    cap.textContent = scored
+      ? `${scored - over} of ${scored} within target`
+      : 'set a target to score these';
+  }
+
+  function renderCharts(){
+    const range = state.settings.chartRange || 'day';
+    document.querySelectorAll('#chartRange button').forEach(b =>
+      b.classList.toggle('active', b.dataset.range === range));
+    const buckets = chartBuckets(range);
+    renderBalanceChart(buckets);
+    renderDailyChart(buckets);
+  }
+
+  document.getElementById('chartRange').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button');
+    if(!btn) return;
+    state.settings.chartRange = btn.dataset.range;
+    saveState();
+    renderCharts();
+  });
 
   // ---------- target editing ----------
   const targetSection = document.getElementById('targetSection');
@@ -1656,31 +2040,14 @@
     if(!ev.target.closest('.search-wrap')) searchResults.style.display = 'none';
   });
 
-  // Tries the newer Search-a-licious endpoint first, falls back to the legacy
-  // endpoint if that fails (Open Food Facts' API layer is unstable as of Aug 2026).
-  // Both are normalized to a plain array of product objects.
-  async function fetchNewSearch(q){
-    const url = `https://search.openfoodfacts.org/search?q=${encodeURIComponent(q)}&page_size=8&langs=en`;
-    const res = await fetch(url);
-    if(res.status === 429) throw new Error('rate limited');
-    if(!res.ok) throw new Error('new endpoint http ' + res.status);
-    const data = await res.json();
-    return data.hits || [];
-  }
-  async function fetchLegacySearch(q){
-    const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=8`;
-    const res = await fetch(url);
-    if(res.status === 429) throw new Error('rate limited');
-    if(!res.ok) throw new Error('legacy endpoint http ' + res.status);
-    const data = await res.json();
-    return data.products || [];
-  }
-
+  // Both providers now come back from our own /api/foodSearch, already
+  // normalised and grouped. That keeps the USDA key server-side, sidesteps
+  // CORS, and shares one cache between devices.
   async function runFoodSearch(q){
     searchResults.style.display = 'block';
 
     if(searchCache.has(q)){
-      renderResults(q, { state: 'done', products: searchCache.get(q) });
+      renderResults(q, { state: 'done', data: searchCache.get(q) });
       return;
     }
 
@@ -1695,31 +2062,18 @@
     renderResults(q, { state: 'pending' });
     lastRequestAt = Date.now();
 
-    let rawProducts = null;
-    let lastError = null;
-    let rateLimited = false;
-
+    let data = null;
     try{
-      rawProducts = await fetchNewSearch(q);
+      const res = await fetch('/api/foodSearch?q=' + encodeURIComponent(q));
+      if(res.status === 401 || res.status === 403){ onAuthLost(); return; }
+      if(!res.ok) throw new Error('http ' + res.status);
+      data = await res.json();
     }catch(e){
-      lastError = e;
-      if(e.message === 'rate limited') rateLimited = true;
-      try{
-        rawProducts = await fetchLegacySearch(q);
-        lastError = null;
-      }catch(e2){
-        lastError = e2;
-        if(e2.message === 'rate limited') rateLimited = true;
-      }
-    }
-
-    if(rawProducts === null){
-      console.error('Food search failed on both endpoints:', lastError);
+      console.error('Food search failed:', e);
       renderResults(q, {
         state: 'error',
-        html: rateLimited
-          ? '<div class="status">Searched too much too fast — wait a few seconds and try again, or add it manually below.</div>'
-          : '<div class="status">Open Food Facts isn\'t responding right now. <a href="#" id="retrySearchLink" style="color:inherit;">Try again</a>, or add it manually below.</div>'
+        html: '<div class="status">Search isn\'t responding right now. ' +
+              '<a href="#" id="retrySearchLink" style="color:inherit;">Try again</a>, or add it manually below.</div>'
       });
       const retryLink = document.getElementById('retrySearchLink');
       if(retryLink){
@@ -1732,8 +2086,8 @@
       return;
     }
 
-    searchCache.set(q, rawProducts);
-    renderResults(q, { state: 'done', products: rawProducts });
+    if((data.basic || []).length || (data.branded || []).length) searchCache.set(q, data);
+    renderResults(q, { state: 'done', data });
   }
 
   // Items you already have, ranked favourites-first then by recent use.
@@ -1777,36 +2131,37 @@
     return row;
   }
 
-  function offResultRow(p){
-    const kcalServing = p.nutriments['energy-kcal_serving'];
-    const kcal100 = p.nutriments['energy-kcal_100g'];
-    const useServing = !!kcalServing;
-    const kcalShown = Math.round(useServing ? kcalServing : kcal100);
-    const label = useServing
-      ? `${kcalShown} kcal${p.serving_size ? ' / ' + p.serving_size : ' / serving'}`
-      : `${kcalShown} kcal / 100g`;
-    const brand = p.brands ? p.brands.split(',')[0].trim() : '';
+  // One row renderer for both providers: the server already normalised them to
+  // a rate per base unit plus optional macros.
+  function remoteResultRow(r){
+    const shown = Math.round(perUnitToDisplay(r.kcalPerUnit, r.unit));
+    const label = shown + ' kcal' + (r.unit === 'unit' ? ' / serving' : ' / 100' + r.unit);
+    const macroNote = r.nutrients
+      ? MACROS.filter(m => r.nutrients[m.k] != null)
+              .map(m => m.k.toUpperCase() + Math.round(perUnitToDisplay(r.nutrients[m.k], r.unit)))
+              .join(' ')
+      : 'no macros';
 
     const row = document.createElement('div');
     row.className = 'item';
     row.innerHTML = `
       <span>
-        <span class="fname">${escapeHtml(p.product_name)}</span>
-        ${brand ? `<span class="brand">${escapeHtml(brand)}</span>` : ''}
+        <span class="fname">${escapeHtml(r.name)}</span>
+        <span class="brand">${escapeHtml([r.brand, macroNote].filter(Boolean).join(' · '))}</span>
       </span>
-      <span class="kcal">${label}</span>
+      <span class="kcal">${escapeHtml(label)}</span>
     `;
     row.addEventListener('click', () => {
-      const name = p.product_name + (brand ? ` (${brand})` : '');
+      const name = r.name + (r.brand ? ` (${r.brand})` : '');
       searchResults.style.display = 'none';
       foodSearch.value = '';
-      if(useServing){
-        // a per-serving figure is already "one of them"
-        logItem(findOrCreateItem(name, kcalShown, 'food', 'unit'), 1);
+      const it = findOrCreateItem(name, r.kcalPerUnit, 'food', r.unit);
+      const n = cleanNutrients(r.nutrients);
+      if(n && !it.nutrients){ it.nutrients = n; touchItem(it); }
+      if(r.unit === 'unit'){
+        logItem(it, 1);
       } else {
-        // a per-100g figure becomes a gram-measured item, so it asks how
-        // much rather than silently logging 100g
-        const it = findOrCreateItem(name, kcalShown / 100, 'food', 'g');
+        // measured by weight or volume, so ask how much rather than assuming
         saveState();
         openQtyPrompt(it);
       }
@@ -1838,22 +2193,39 @@
             '<div class="status">Keep typing to search Open Food Facts…</div>');
         }
       } else if(off.state === 'done'){
-        const products = (off.products || []).filter(p =>
-          p.product_name && p.nutriments &&
-          (p.nutriments['energy-kcal_serving'] || p.nutriments['energy-kcal_100g'])
-        );
-        if(products.length === 0){
-          if(!mine.length){
-            searchResults.insertAdjacentHTML('beforeend',
-              '<div class="status">No matches — add it manually below.</div>');
-          }
-        } else {
-          searchResults.appendChild(resultHead('Open Food Facts'));
-          products.slice(0, 8).forEach(p => searchResults.appendChild(offResultRow(p)));
+        const data = off.data || {};
+        const basic = data.basic || [], branded = data.branded || [];
+
+        // Deliberately grouped rather than interleaved: the two providers rank
+        // by incomparable relevance signals, so any blended order would be
+        // invented. The groups also mean different things to you.
+        if(basic.length){
+          searchResults.appendChild(resultHead('Basic foods'));
+          basic.forEach(r => searchResults.appendChild(remoteResultRow(r)));
+        }
+        if(branded.length){
+          searchResults.appendChild(resultHead('Branded products'));
+          branded.forEach(r => searchResults.appendChild(remoteResultRow(r)));
+        }
+
+        if(!basic.length && !branded.length && !mine.length){
+          searchResults.insertAdjacentHTML('beforeend',
+            '<div class="status">No matches — add it manually below.</div>');
+        }
+        if(basic.length || branded.length){
+          const src = [basic.length ? 'USDA FoodData Central' : null,
+                       branded.length ? 'Open Food Facts' : null].filter(Boolean).join(' · ');
           const attr = document.createElement('div');
           attr.className = 'attribution';
-          attr.textContent = 'Data: Open Food Facts — figures may be per 100g, check before logging';
+          attr.textContent = 'Data: ' + src;
           searchResults.appendChild(attr);
+        }
+        const errs = data.errors || {};
+        if((errs.basic && !basic.length) || (errs.branded && !branded.length)){
+          const which = [errs.basic && !basic.length ? 'basic foods' : null,
+                         errs.branded && !branded.length ? 'branded products' : null].filter(Boolean).join(' and ');
+          searchResults.insertAdjacentHTML('beforeend',
+            `<div class="status">Couldn’t reach ${escapeHtml(which)} just now.</div>`);
         }
       }
     }catch(e){
@@ -1961,6 +2333,7 @@
   function renderAll(){
     renderToday();
     renderHistory();
+    renderCharts();
     // favourite order depends on recent usage, so it moves as you log
     renderFavs();
     renderActivities();
@@ -2104,7 +2477,7 @@
       items,
       entries,
       dayTargets,
-      settings: Object.assign({ defaultTarget: null, favSort: 'frequency' }, newer.settings || {}),
+      settings: Object.assign({ defaultTarget: null, favSort: 'frequency', chartRange: 'day', macroTargets: null }, newer.settings || {}),
       _lastChange: newer._lastChange
     };
   }
