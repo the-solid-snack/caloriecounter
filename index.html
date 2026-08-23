@@ -289,10 +289,32 @@
   .macro-line .macro b{color:var(--muted);font-weight:500;margin-right:2px;}
   .macro-line .macro.partial{color:var(--muted);}
   .macro-line .macro-warn{
+    font-family:inherit;font-size:12px;
     color:var(--red);
-    border-bottom:1px dotted var(--red);
-    cursor:help;
+    background:none;border:none;border-bottom:1px dotted var(--red);
+    padding:0;cursor:pointer;
+    display:inline-flex;align-items:center;gap:5px;
   }
+  .macro-line .macro-warn:hover{color:var(--ink);border-bottom-color:var(--ink);}
+  .macro-fix-count{
+    background:var(--red);color:#fff;
+    border-radius:8px;padding:0 5px;
+    font-size:10.5px;line-height:15px;min-width:15px;text-align:center;
+  }
+  .macro-line .macro-warn:hover .macro-fix-count{background:var(--ink);}
+
+  /* ---- macro fixer ---- */
+  .fx-count{
+    font-family:'IBM Plex Mono',monospace;font-size:10.5px;
+    text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+    margin-bottom:8px;
+  }
+  .fx-count b{color:var(--red);font-weight:600;}
+  .fx-name{font-family:'Spectral',serif;font-size:17px;line-height:1.25;}
+  .fx-meta{font-size:12px;color:var(--faint);margin:2px 0 10px;}
+  .fx-applied{color:var(--green);}
+  .fx-skip{margin-top:4px;}
+  .fx-skip a{font-size:12px;color:var(--faint);}
   .target-adjust{margin-top:8px;}
   .target-adjust #editTargetBtn{
     background:none;border:none;
@@ -1396,7 +1418,7 @@
   }
 
   // ---------- modal helper ----------
-  function openModal(title, bodyHtml, onSave, saveLabel){
+  function openModal(title, bodyHtml, onSave, saveLabel, onClose){
     const old = document.getElementById('appModal');
     if(old) old.remove();
     const wrap = document.createElement('div');
@@ -1412,7 +1434,9 @@
          </div>
        </div>`;
     document.body.appendChild(wrap);
-    const close = () => wrap.remove();
+    // Every exit route runs onClose, so a dialog that changed state can't
+    // leave a stale counter behind it.
+    const close = () => { wrap.remove(); if(onClose) onClose(); };
     document.getElementById('modalCancel').addEventListener('click', close);
     wrap.addEventListener('click', (ev) => { if(ev.target === wrap) close(); });
     document.getElementById('modalSave').addEventListener('click', () => {
@@ -1508,6 +1532,138 @@
     sync();
   }
 
+  // ---------- fill in missing macros ----------
+  // Works through the gaps worst-first, one at a time. A USDA suggestion is
+  // offered but never applied on its own: matching "Mum's lasagne" to a
+  // reference food is a guess, and a confidently wrong macro figure is worse
+  // than an admitted blank.
+  function openMacroFixer(){
+    let queue = itemsMissingMacros();
+    if(!queue.length){
+      openModal('Nothing to fill in', '<div class="f-hint">Every item you have logged already has protein, carbs and fat.</div>', () => true, 'Close');
+      return;
+    }
+    let pos = 0;
+
+    const wrap = openModal('Fill in missing macros', '<div id="fixBody"></div>', (w) => {
+      const cur = queue[pos];
+      if(!cur) return true;
+      const u = cur.item.unit;
+      const nutr = {};
+      MACROS.forEach(m => {
+        const box = w.querySelector('#fx_' + m.k);
+        const raw = box ? box.value.trim() : '';
+        if(raw === '') return;
+        const v = Number(raw);
+        if(Number.isFinite(v) && v >= 0) nutr[m.k] = displayToPerUnit(v, u);
+      });
+
+      if(Object.keys(nutr).length){
+        cur.item.nutrients = Object.assign({}, cur.item.nutrients || {}, nutr);
+        touchItem(cur.item);
+
+        // Deliberate, explicitly asked for, and off by default -- this is the
+        // one case where rewriting logged history is what you actually want.
+        const back = w.querySelector('#fxBackfill');
+        if(back && back.checked){
+          const frozen = cleanNutrients(cur.item.nutrients);
+          state.entries.forEach(e => {
+            if(e.itemId === cur.item.id && frozen) e.nutrPerUnit = Object.assign({}, frozen);
+          });
+        }
+        saveState();
+        renderAll();
+      }
+      pos++;
+      if(pos >= queue.length) return true;
+      paint();
+      return false;               // stay open and move to the next one
+    }, 'Validate and next', renderMacros);
+
+    const cancelBtn = wrap.querySelector('#modalCancel');
+    if(cancelBtn) cancelBtn.textContent = 'Close';
+
+    function paint(){
+      const cur = queue[pos];
+      const body = wrap.querySelector('#fixBody');
+      const u = cur.item.unit;
+      const per = u === 'unit' ? 'per portion' : 'per 100' + u;
+
+      body.innerHTML = `
+        <div class="fx-count"><b>${queue.length - pos}</b> of ${queue.length} still missing data</div>
+        <div class="fx-name">${escapeHtml(cur.item.name)}</div>
+        <div class="fx-meta">${cur.logs ? `logged ${cur.logs}×· ${Math.round(cur.impact).toLocaleString()} kcal of history` : 'never logged yet'} · ${escapeHtml(per)}</div>
+        <div class="f-hint" id="fxSuggest">Looking for a reference match…</div>
+        <div class="f-macros">
+          ${MACROS.map(m => {
+            const v = (cur.item.nutrients && cur.item.nutrients[m.k] != null)
+              ? Math.round(perUnitToDisplay(cur.item.nutrients[m.k], u)) : '';
+            return `<label class="f-row"><span>${m.label} (g)</span>
+              <input type="number" id="fx_${m.k}" value="${v}" min="0" step="1" placeholder="—"></label>`;
+          }).join('')}
+        </div>
+        <label class="f-check"><input type="checkbox" id="fxBackfill"> also apply to the ${cur.logs} entr${cur.logs === 1 ? 'y' : 'ies'} already logged</label>
+        <div class="fx-skip"><a href="#" id="fxSkip">skip this one — I’ll never have figures for it</a></div>
+      `;
+      if(!cur.logs){
+        const bf = body.querySelector('#fxBackfill');
+        if(bf) bf.closest('.f-check').style.display = 'none';
+      }
+
+      body.querySelector('#fxSkip').addEventListener('click', (ev) => {
+        ev.preventDefault();
+        cur.item.macrosSkipped = true;
+        touchItem(cur.item);
+        saveState();
+        pos++;
+        if(pos >= queue.length){ wrap.remove(); renderMacros(); return; }
+        paint();
+      });
+
+      suggestFor(cur.item, body.querySelector('#fxSuggest'), body);
+    }
+
+    async function suggestFor(item, hintEl, body){
+      try{
+        const res = await fetch('/api/foodSearch?q=' + encodeURIComponent(item.name.slice(0, 60)));
+        if(!res.ok) throw new Error('http ' + res.status);
+        const data = await res.json();
+        const withMacros = (data.basic || []).concat(data.branded || [])
+          .filter(r => r.nutrients && MACROS.some(m => r.nutrients[m.k] != null));
+        // Only offer a match measured the same way. "23 g of protein" means
+        // per 100g or per portion depending on the unit, and converting
+        // between them needs a portion weight we do not have -- so a
+        // mismatched fill would quietly store the wrong figure.
+        const cand = withMacros.find(r => r.unit === item.unit);
+        if(!cand){
+          hintEl.textContent = withMacros.length
+            ? `Found matches, but measured per 100${withMacros[0].unit} while this item is per ${item.unit === 'unit' ? 'portion' : '100' + item.unit} — type the figures in.`
+            : 'No reference match — type the figures from the packet.';
+          return;
+        }
+
+        hintEl.innerHTML = `Closest match: <b>${escapeHtml(cand.name)}</b>` +
+          (cand.brand ? ' · ' + escapeHtml(cand.brand) : '') +
+          ` — <a href="#" id="fxUse">use these figures</a>`;
+        hintEl.querySelector('#fxUse').addEventListener('click', (ev) => {
+          ev.preventDefault();
+          MACROS.forEach(m => {
+            const box = body.querySelector('#fx_' + m.k);
+            if(box && cand.nutrients[m.k] != null){
+              box.value = Math.round(perUnitToDisplay(cand.nutrients[m.k], cand.unit));
+            }
+          });
+          hintEl.insertAdjacentHTML('beforeend',
+            '<span class="fx-applied"> — filled in, check before validating</span>');
+        });
+      }catch(e){
+        hintEl.textContent = 'Couldn’t reach the reference search — type the figures in.';
+      }
+    }
+
+    paint();
+  }
+
   function openQtyPrompt(item){
     const u = item.unit;
     const body = `
@@ -1584,6 +1740,23 @@
       });
     });
     return out;
+  }
+
+  // Ranked by how much of your history the gap actually hides: the sum of
+  // calories logged against the item. Filling the top of this list closes the
+  // biggest hole, which is not the same as filling the longest list.
+  function itemsMissingMacros(){
+    const impact = {}, logs = {};
+    state.entries.forEach(e => {
+      if(!e.itemId) return;
+      impact[e.itemId] = (impact[e.itemId] || 0) + Math.abs(entryKcal(e));
+      logs[e.itemId] = (logs[e.itemId] || 0) + 1;
+    });
+    return state.items
+      .filter(i => i.kind === 'food' && !i.archived && !i.macrosSkipped &&
+        (!i.nutrients || MACROS.some(m => i.nutrients[m.k] == null)))
+      .map(i => ({ item: i, impact: impact[i.id] || 0, logs: logs[i.id] || 0 }))
+      .sort((a, b) => b.impact - a.impact || a.item.name.localeCompare(b.item.name));
   }
 
   function entriesMissingMacros(list){
@@ -1792,12 +1965,18 @@
     }).join('');
 
     const missing = entriesMissingMacros(list).length;
+    const fixable = itemsMissingMacros().length;
     const warn = missing
-      ? `<span class="macro-warn" title="${missing} of ${t.total} entries today have no macro figures, so these totals are a minimum, not a sum.">` +
-        `${missing} of ${t.total} missing macros</span>`
+      ? `<button type="button" class="macro-warn" id="macroFixBtn"` +
+        ` title="${missing} of ${t.total} entries today have no macro figures, so these totals are a minimum, not a sum.` +
+        (fixable ? `\n\n${fixable} item${fixable === 1 ? '' : 's'} can be filled in.` : '') + `">` +
+        `${missing} of ${t.total} missing macros` +
+        (fixable ? ` <span class="macro-fix-count">${fixable}</span>` : '') + `</button>`
       : '';
 
     el.innerHTML = parts + warn;
+    const btn = document.getElementById('macroFixBtn');
+    if(btn) btn.addEventListener('click', openMacroFixer);
   }
 
   // ---------- hero charts ----------
