@@ -956,7 +956,8 @@
   const PENDING_KEY_BASE = 'calorieLedger_pending';
   const REAUTH_FLAG = 'calorieLedger_reauthAttempt';
   const REAUTH_COOLDOWN_MS = 2 * 60 * 1000;
-  const AUTH_POLL_MS = 5 * 60 * 1000;
+  const AUTH_POLL_MS = 5 * 60 * 1000;   // is the 8h session still alive
+  const SYNC_POLL_MS = 30 * 1000;       // has another device logged anything
 
   // "this device holds edits the server has not confirmed". Lives in localStorage
   // so it survives the page reload that a re-auth redirect causes.
@@ -1160,6 +1161,10 @@
     // Cleared only when the server confirms a 2xx, so an edit made while the
     // session was dead is still known to be un-uploaded after a reload.
     setPending(activeProfile, true);
+    // Repaint, or the "saving…" hint can never appear: this is the only moment
+    // pending goes true, and without it an edit that never uploads looks
+    // identical to one that did.
+    renderSyncStatus();
     queueCloudSync();
   }
 
@@ -2812,10 +2817,30 @@
     }
   });
 
+  // visibilitychange does NOT fire when you switch applications on a desktop --
+  // the tab stays "visible", just behind another window. Without this, clicking
+  // back into the browser from another app triggered nothing at all, and you
+  // waited on the poll timer instead.
+  window.addEventListener('focus', async () => {
+    if(!cloudUser) return;
+    await syncWithCloud(activeProfile);
+  });
+  // ...and leaving is the moment to push, rather than trusting a timer that a
+  // backgrounded tab will throttle and a sleeping machine will suspend.
+  window.addEventListener('blur', () => { if(cloudUser) flushCloudSyncOnUnload(); });
+
+  // Two separate cadences: checking for other devices' edits is a cheap read of
+  // our own API and wants to be frequent; revalidating the session is about an
+  // 8-hour cookie and does not.
+  let lastAuthCheck = Date.now();
   setInterval(async () => {
     if(document.visibilityState !== 'visible' || !cloudUser) return;
-    if(await revalidateAuth()) await syncWithCloud(activeProfile);
-  }, AUTH_POLL_MS);
+    if(Date.now() - lastAuthCheck >= AUTH_POLL_MS){
+      lastAuthCheck = Date.now();
+      if(!(await revalidateAuth())) return;
+    }
+    await syncWithCloud(activeProfile);
+  }, SYNC_POLL_MS);
 
   async function initCloudSync(){
     cloudUser = await checkAuth();
