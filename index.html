@@ -1267,6 +1267,21 @@
 
   // ---------- selected date (for viewing/editing past days) ----------
   let selectedDate = todayKey();
+  // A tab left open overnight used to stay pinned to yesterday: it kept showing
+  // yesterday's list while another device logged to today, and anything logged
+  // from it was dated yesterday. followToday tracks whether the user is sitting
+  // on "today" (so we roll them over at midnight) or has deliberately navigated
+  // to a past day (so we leave them there).
+  let followToday = true;
+
+  function rollDateIfNeeded(){
+    if(!followToday) return false;
+    const t = todayKey();
+    if(selectedDate === t) return false;
+    selectedDate = t;
+    editingEntryId = null;
+    return true;
+  }
 
   function renderDateNav(){
     const isToday = selectedDate === todayKey();
@@ -1282,6 +1297,7 @@
     const d = new Date(selectedDate + 'T00:00:00');
     d.setDate(d.getDate() + days);
     selectedDate = todayKey(d);
+    followToday = (selectedDate === todayKey());
     renderDateNav();
     renderToday();
   }
@@ -1290,8 +1306,16 @@
   document.getElementById('jumpTodayBtn').addEventListener('click', () => {
     editingEntryId = null;
     selectedDate = todayKey();
+    followToday = true;
     renderDateNav();
     renderToday();
+  });
+
+  // Cheap safety net for the tab that never gets closed. Also runs on focus and
+  // before every sync, so the rollover is noticed the moment you look at it.
+  setInterval(() => { if(rollDateIfNeeded()) renderAll(); }, 60 * 1000);
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible' && rollDateIfNeeded()) renderAll();
   });
 
   // ---------- entries for today ----------
@@ -2708,11 +2732,24 @@
       if(!res.ok) return;
       clearReauthFlag();
       const body = await res.json();
-      if(body && body.data) server = normalizeState(JSON.parse(body.data));
+      if(body && body.data){
+        const parsed = JSON.parse(body.data);
+        // Check the version on the RAW payload: normalizeState stamps the
+        // current schema onto whatever it is handed, so the guard inside
+        // mergeStates could never fire once it had been through here.
+        if(parsed && parsed.schema != null && Number(parsed.schema) !== SCHEMA){
+          console.warn('Ignoring server state with schema', parsed.schema, '- expected', SCHEMA);
+        } else {
+          server = normalizeState(parsed);
+        }
+      }
     }catch(e){
       console.error('Cloud load failed:', e);
       return;
     }
+
+    // pick up a midnight rollover before deciding what to draw
+    rollDateIfNeeded();
 
     const local  = profile === activeProfile ? normalizeState(state) : loadStateFor(profile);
     const merged = normalizeState(mergeStates(local, server));
