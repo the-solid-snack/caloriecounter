@@ -1052,6 +1052,36 @@
     };
   }
 
+  // ---------- deletion ----------
+  // A union merge cannot express "deleted": an id that is simply absent is
+  // indistinguishable from one the other device has not seen yet, so the other
+  // device unions it straight back in and the deletion undoes itself. Deleting
+  // therefore marks a tombstone rather than removing the record, and the
+  // existing updatedAt tiebreak makes the tombstone win over a live copy.
+  //
+  // Declared above normalizeState on purpose: it calls purgeTombstones during
+  // the very first load, so anything it depends on has to be initialised by
+  // then. A const declared further down would still be in its temporal dead
+  // zone and would take the whole script with it.
+  function isLive(o){ return o && !o.deleted; }
+
+  function tombstone(o){
+    o.deleted = true;
+    o.updatedAt = nowIso();
+  }
+
+  // Tombstones are tiny, but not unbounded: drop the ones far older than any
+  // plausible offline window, by which point every device has long since
+  // agreed the record is gone.
+  const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+  function purgeTombstones(s){
+    const cutoff = Date.now() - TOMBSTONE_TTL_MS;
+    const old = o => o && o.deleted && new Date(o.updatedAt || 0).getTime() < cutoff;
+    s.entries = (s.entries || []).filter(e => !old(e));
+    s.items = (s.items || []).filter(i => !old(i));
+    return s;
+  }
+
   function normalizeState(s){
     if(!s || typeof s !== 'object') s = {};
     if(!Array.isArray(s.items)) s.items = [];
@@ -1064,6 +1094,7 @@
     // Placeholder so per-macro goals can be switched on later without another
     // schema change: null means "not using macro targets".
     if(s.settings.macroTargets === undefined) s.settings.macroTargets = null;
+    purgeTombstones(s);
     s.schema = SCHEMA;
     return s;
   }
@@ -1171,6 +1202,11 @@
   let state = normalizeState(loadState());
 
   // ---------- item + entry helpers ----------
+  function liveEntries(){ return state.entries.filter(isLive); }
+  function liveItems(){ return state.items.filter(isLive); }
+
+  // Deliberately finds tombstoned items too, so a surviving entry can still be
+  // labelled rather than rendering as a dash.
   function itemById(id){ return state.items.find(i => i.id === id) || null; }
 
   function itemLabel(e){
@@ -1180,7 +1216,7 @@
 
   function findOrCreateItem(name, kcalPerUnit, kind, unit){
     const key = String(name).trim().toLowerCase();
-    let it = state.items.find(i => i.name.trim().toLowerCase() === key && i.kind === kind && !i.archived);
+    let it = liveItems().find(i => i.name.trim().toLowerCase() === key && i.kind === kind && !i.archived);
     if(it) return it;
     it = makeItem({ name, kind, unit: unit || 'unit', kcalPerUnit, favourite: false });
     state.items.push(it);
@@ -1193,7 +1229,7 @@
   function usageCounts(days){
     const cutoff = Date.now() - days * 86400000;
     const counts = {};
-    state.entries.forEach(e => {
+    liveEntries().forEach(e => {
       if(!e.itemId) return;
       if(new Date(e.ts).getTime() < cutoff) return;
       counts[e.itemId] = (counts[e.itemId] || 0) + 1;
@@ -1213,7 +1249,7 @@
   let favUnfreezeTimer = null;
 
   function favouriteItems(kind){
-    const list = state.items.filter(i => i.favourite && !i.archived && i.kind === kind);
+    const list = liveItems().filter(i => i.favourite && !i.archived && i.kind === kind);
     if(state.settings.favSort === 'alpha'){
       return list.sort((a, b) => a.name.localeCompare(b.name));
     }
@@ -1325,7 +1361,7 @@
 
   // ---------- entries for today ----------
   function entriesForDay(dayKey){
-    return state.entries.filter(e => e.date === dayKey);
+    return liveEntries().filter(e => e.date === dayKey);
   }
   function totalFor(list){
     return list.reduce((s, e) => s + entryKcal(e), 0);
@@ -1367,7 +1403,7 @@
     // what makes the old "Recent" section unnecessary: anything ever logged is
     // an item, so it is findable here.
     const list = q
-      ? state.items.filter(i => i.kind === kind && !i.archived && i.name.toLowerCase().includes(q))
+      ? liveItems().filter(i => i.kind === kind && !i.archived && i.name.toLowerCase().includes(q))
       : favouriteItems(kind);
 
     if(list.length === 0){
@@ -1427,7 +1463,7 @@
   document.getElementById('addActivityBtn').addEventListener('click', () => openItemEditor(null, 'activity'));
 
   function removeItem(item){
-    const used = state.entries.some(e => e.itemId === item.id);
+    const used = liveEntries().some(e => e.itemId === item.id);
     if(used){
       // Archive rather than delete: past entries still point here for their label.
       if(!confirm(`"${item.name}" has been logged before.\n\nRemove it from the list? Past entries keep their history.`)) return;
@@ -1435,7 +1471,7 @@
       touchItem(item);
     } else {
       if(!confirm(`Remove "${item.name}"?`)) return;
-      state.items = state.items.filter(i => i.id !== item.id);
+      tombstone(item);
     }
     saveState();
     renderFavs(); renderActivities();
@@ -1600,7 +1636,7 @@
         const back = w.querySelector('#fxBackfill');
         if(back && back.checked){
           const frozen = cleanNutrients(cur.item.nutrients);
-          state.entries.forEach(e => {
+          liveEntries().forEach(e => {
             if(e.itemId === cur.item.id && frozen) e.nutrPerUnit = Object.assign({}, frozen);
           });
         }
@@ -1780,12 +1816,12 @@
   // biggest hole, which is not the same as filling the longest list.
   function itemsMissingMacros(){
     const impact = {}, logs = {};
-    state.entries.forEach(e => {
+    liveEntries().forEach(e => {
       if(!e.itemId) return;
       impact[e.itemId] = (impact[e.itemId] || 0) + Math.abs(entryKcal(e));
       logs[e.itemId] = (logs[e.itemId] || 0) + 1;
     });
-    return state.items
+    return liveItems()
       .filter(i => i.kind === 'food' && !i.archived && !i.macrosSkipped &&
         (!i.nutrients || MACROS.some(m => i.nutrients[m.k] == null)))
       .map(i => ({ item: i, impact: impact[i.id] || 0, logs: logs[i.id] || 0 }))
@@ -1812,7 +1848,9 @@
   }
 
   function deleteEntry(id){
-    state.entries = state.entries.filter(e => e.id !== id);
+    const e = state.entries.find(x => x.id === id);
+    if(!e) return;
+    tombstone(e);
     saveState();
     renderAll();
   }
@@ -2022,7 +2060,7 @@
 
   function entriesByDate(){
     const m = {};
-    state.entries.forEach(e => { (m[e.date] = m[e.date] || []).push(e); });
+    liveEntries().forEach(e => { (m[e.date] = m[e.date] || []).push(e); });
     return m;
   }
 
@@ -2307,7 +2345,7 @@
     const s = q.trim().toLowerCase();
     if(s.length < 2) return [];
     const counts = usageCounts(30);
-    return state.items
+    return liveItems()
       .filter(i => !i.archived && i.name.toLowerCase().includes(s))
       .sort((a, b) =>
         (Number(b.favourite) - Number(a.favourite)) ||
@@ -2484,7 +2522,7 @@
   function groupEntries(range){
     // returns array of {key, label, total} most recent first, plus target for period
     const groups = {};
-    state.entries.forEach(e => {
+    liveEntries().forEach(e => {
       const d = new Date(e.ts);
       let key, label;
       if(range === 'day'){
@@ -2759,8 +2797,15 @@
     const local  = profile === activeProfile ? normalizeState(state) : loadStateFor(profile);
     const merged = normalizeState(mergeStates(local, server));
 
-    const serverIds = new Set((server && server.entries || []).map(e => e && e.id));
-    const serverMissingEntries = merged.entries.some(e => !serverIds.has(e.id));
+    // "Is the server missing an id" is not enough: a deletion or a rename
+    // leaves the id in place and changes the record, so the server could sit
+    // holding a stale live copy that another device would then resurrect.
+    // Compare identity *and* version.
+    const sig = o => (o && o.id) + '|' + ((o && o.updatedAt) || '') + '|' + (o && o.deleted ? 1 : 0);
+    const serverSigs = new Set(
+      ((server && server.entries) || []).concat((server && server.items) || []).map(sig)
+    );
+    const serverStale = merged.entries.concat(merged.items).some(o => !serverSigs.has(sig(o)));
 
     if(profile === activeProfile){
       state = merged;
@@ -2770,7 +2815,7 @@
     }
     try{ localStorage.setItem(storeKeyFor(profile), JSON.stringify(merged)); }catch(e){}
 
-    if(!server || serverMissingEntries || isPending(profile)){
+    if(!server || serverStale || isPending(profile)){
       await pushState(profile, merged);
     } else {
       setPending(profile, false);
