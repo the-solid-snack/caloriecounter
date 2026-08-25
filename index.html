@@ -1575,14 +1575,20 @@
       if(isNew){
         state.items.push(makeItem({ name, kind, unit: u, kcalPerUnit: rate, favourite: true, nutrients }));
       } else {
-        item.name = name;
-        item.unit = u;
-        item.kcalPerUnit = rate;
-        if(nutrients) item.nutrients = nutrients;
-        else delete item.nutrients;
+        // Re-resolve by id rather than trusting the reference captured when the
+        // dialog opened. A sync that lands while you are typing replaces
+        // state.items wholesale, and if the server's copy of this item won the
+        // merge, the captured object is an orphan -- writing to it succeeds and
+        // is then thrown away with no error at all.
+        const live = itemById(item.id) || item;
+        live.name = name;
+        live.unit = u;
+        live.kcalPerUnit = rate;
+        if(nutrients) live.nutrients = nutrients;
+        else delete live.nutrients;
         const fav = w.querySelector('#miFav');
-        if(fav) item.favourite = fav.checked;
-        touchItem(item);
+        if(fav) live.favourite = fav.checked;
+        touchItem(live);
       }
       saveState();
       renderAll();
@@ -1628,16 +1634,20 @@
       });
 
       if(Object.keys(nutr).length){
-        cur.item.nutrients = Object.assign({}, cur.item.nutrients || {}, nutr);
-        touchItem(cur.item);
+        // Same re-resolve as the item editor, and this queue is walked for
+        // minutes across many "validate and next" clicks, so it is the more
+        // exposed of the two.
+        const live = itemById(cur.item.id) || cur.item;
+        live.nutrients = Object.assign({}, live.nutrients || {}, nutr);
+        touchItem(live);
 
         // Deliberate, explicitly asked for, and off by default -- this is the
         // one case where rewriting logged history is what you actually want.
         const back = w.querySelector('#fxBackfill');
         if(back && back.checked){
-          const frozen = cleanNutrients(cur.item.nutrients);
+          const frozen = cleanNutrients(live.nutrients);
           liveEntries().forEach(e => {
-            if(e.itemId === cur.item.id && frozen) e.nutrPerUnit = Object.assign({}, frozen);
+            if(e.itemId === live.id && frozen) e.nutrPerUnit = Object.assign({}, frozen);
           });
         }
         saveState();
@@ -1761,6 +1771,10 @@
   let flashTimer = null;
 
   function logItem(item, qty){
+    // Re-resolve here too: the quantity prompt and the chips both hand over a
+    // reference that a sync may have orphaned, and logging against an orphan
+    // would freeze a stale rate onto the entry.
+    item = itemById(item.id) || item;
     // Pin the current chip order before the usage counts change under it, and
     // flash the chip green so a tap is visibly acknowledged -- between them
     // there is no reason to tap twice.
